@@ -76,3 +76,22 @@ void icon_sd(int x, int y, bool present)
         st7305_draw_line(x + 1, y + h - 2, x + w - 2, y + 2, ICON_BLACK);
     }
 }
+
+void icon_thermometer(int x, int y)
+{
+    /* 杆: 细长圆角矩形，内部填充示意水银柱 */
+    st7305_draw_round_rect(x + 4, y, 4, 10, 2, ICON_BLACK);
+    st7305_fill_rect(x + 5, y + 2, 2, 7, ICON_BLACK);
+
+    /* 底部球 */
+    st7305_draw_round_rect(x + 2, y + 9, 8, 8, 4, ICON_BLACK);
+    st7305_fill_rect(x + 4, y + 11, 4, 4, ICON_BLACK);
+}
+
+void icon_droplet(int x, int y)
+{
+    /* 尖顶两条斜边 + 圆润底部 */
+    st7305_draw_line(x + 6, y, x + 1, y + 8, ICON_BLACK);
+    st7305_draw_line(x + 6, y, x + 11, y + 8, ICON_BLACK);
+    st7305_draw_round_rect(x, y + 6, 12, 10, 5, ICON_BLACK);
+}

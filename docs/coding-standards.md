@@ -109,6 +109,9 @@ typedef struct {
 |---|---|---|---|
 | main_task | 默认 | 1 | app_main（启动后即退出） |
 | ui_task | 4096 | 5 | ui_manager（30ms轮询按键，1s页面tick） |
+| env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV） |
+| claude_quota_task | 4096 | 3 | claude_quota_client（60s轮询Mac桥接服务，mDNS+HTTP+cJSON解析） |
+| weather_task | 4096 | 3 | weather_client（15分钟轮询Mac桥接服务，mDNS+HTTP+cJSON解析） |
 | *(后续新增在此登记)* | | | |
 
 ## 7. 密钥管理

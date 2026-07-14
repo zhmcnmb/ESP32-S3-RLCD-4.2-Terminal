@@ -17,9 +17,16 @@ const ui_page_t *page_home_get(void);
 /* 诊断页: 硬件自检结果。也是页面接口的参照范例 */
 const ui_page_t *page_diag_get(void);
 
+/* 环境趋势页: 温湿度历史折线图，数据来自 env_logger */
+const ui_page_t *page_env_monitor_get(void);
+
+/* Claude用量页: 5小时/7天订阅用量窗口，数据来自 claude_quota_client */
+const ui_page_t *page_quota_get(void);
+
+/* 天气页: 和风天气当前实况，数据来自 weather_client */
+const ui_page_t *page_weather_get(void);
+
 /* 后续阶段补充:
- * const ui_page_t *page_env_monitor_get(void);   P2 温湿度历史趋势
- * const ui_page_t *page_quota_get(void);         P4 Claude额度
  * const ui_page_t *page_voice_get(void);         P5 语音交互
  */
 

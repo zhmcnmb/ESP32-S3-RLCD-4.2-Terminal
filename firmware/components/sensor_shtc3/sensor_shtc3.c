@@ -5,6 +5,7 @@
 #include "esp_log.h"
 #include "esp_rom_sys.h"
 #include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "freertos/task.h"
 
 static const char *TAG = "shtc3";
@@ -22,6 +23,7 @@ static const char *TAG = "shtc3";
 #define MEASURE_DELAY_MS  20
 
 static i2c_master_dev_handle_t s_dev = NULL;
+static SemaphoreHandle_t s_lock = NULL; /* 串行化多步时序，防止并发调用方(ui_task/env_logger_task)交错命令 */
 
 static esp_err_t send_cmd(uint16_t cmd)
 {
@@ -40,6 +42,9 @@ esp_err_t shtc3_init(void)
     };
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(board_i2c_bus(), &cfg, &s_dev), TAG, "add dev");
 
+    s_lock = xSemaphoreCreateMutex();
+    ESP_RETURN_ON_FALSE(s_lock, ESP_ERR_NO_MEM, TAG, "mutex创建失败");
+
     /* 唤醒后立即休眠，确认器件应答正常 */
     ESP_RETURN_ON_ERROR(send_cmd(CMD_WAKEUP), TAG, "wakeup");
     esp_rom_delay_us(WAKEUP_DELAY_US);
@@ -49,10 +54,9 @@ esp_err_t shtc3_init(void)
     return ESP_OK;
 }
 
-esp_err_t shtc3_read(shtc3_reading_t *out)
+/* 实际读取时序，调用方须持有 s_lock */
+static esp_err_t read_locked(shtc3_reading_t *out)
 {
-    ESP_RETURN_ON_FALSE(out && s_dev, ESP_ERR_INVALID_ARG, TAG, "bad arg");
-
     ESP_RETURN_ON_ERROR(send_cmd(CMD_WAKEUP), TAG, "wakeup");
     esp_rom_delay_us(WAKEUP_DELAY_US);
 
@@ -72,4 +76,14 @@ esp_err_t shtc3_read(shtc3_reading_t *out)
     out->humidity = 100.0f * (float)raw_h / 65535.0f;
 
     return ESP_OK;
+}
+
+esp_err_t shtc3_read(shtc3_reading_t *out)
+{
+    ESP_RETURN_ON_FALSE(out && s_dev, ESP_ERR_INVALID_ARG, TAG, "bad arg");
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t err = read_locked(out);
+    xSemaphoreGive(s_lock);
+    return err;
 }

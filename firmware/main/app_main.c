@@ -2,7 +2,9 @@
 
 #include "battery.h"
 #include "board_rlcd42.h"
+#include "claude_quota_client.h"
 #include "display_st7305.h"
+#include "env_logger.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
 #include "esp_log.h"
@@ -15,6 +17,7 @@
 #include "time_service.h"
 #include "ui_manager.h"
 #include "ui_pages.h"
+#include "weather_client.h"
 
 /*
  * 启动编排。按 docs/coding-standards.md 第3节，本文件只做:
@@ -35,6 +38,14 @@ static void log_chip_info(void)
              (unsigned)(esp_psram_get_size() / (1024 * 1024)));
 }
 
+/* 可选外设/服务失败不阻断启动，只降级+记日志(规范第4节: 驱动/服务层不能ESP_ERROR_CHECK) */
+static void log_if_failed(esp_err_t err, const char *what)
+{
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "%s失败: %s", what, esp_err_to_name(err));
+    }
+}
+
 /* 网络与校时异步进行: 没网也要能显示时间(RTC)和温湿度，所以不阻塞UI启动 */
 static void start_network(void)
 {
@@ -43,12 +54,20 @@ static void start_network(void)
         ESP_LOGW(TAG, "WiFi初始化失败: %s，离线运行", esp_err_to_name(err));
         return;
     }
-    if (net_wait_connected(15000) != ESP_OK) {
+
+    /* 先等WiFi真连上(最多15s)再启动这些后台轮询任务，避免它们的首次请求
+     * 抢在网络就绪前必然失败——mDNS/DNS都需要实际连通性，不只是netif已init。
+     * 超时也照常启动，让各自任务在下个周期自行重试 */
+    bool connected = (net_wait_connected(15000) == ESP_OK);
+    if (!connected) {
         ESP_LOGW(TAG, "WiFi连接超时，后台继续重试");
-        return;
     }
-    if (time_service_start_sntp() != ESP_OK) {
-        ESP_LOGW(TAG, "SNTP启动失败");
+
+    log_if_failed(claude_quota_client_init(BRIDGE_MDNS_HOST, BRIDGE_PORT), "Claude用量客户端启动");
+    log_if_failed(weather_client_init(BRIDGE_MDNS_HOST, BRIDGE_PORT), "天气客户端启动");
+
+    if (connected) {
+        log_if_failed(time_service_start_sntp(), "SNTP启动");
     }
 }
 
@@ -63,19 +82,16 @@ void app_main(void)
     ESP_ERROR_CHECK(shtc3_init());
     ESP_ERROR_CHECK(battery_init());
 
-    /* SD卡是可选外设，未插卡不应中止启动 */
-    if (storage_sd_init() != ESP_OK) {
-        ESP_LOGW(TAG, "SD卡不可用，相关功能降级");
-    }
-
-    /* RTC可能掉电过，失败不阻断启动(降级为"时间未校准") */
-    if (time_service_init(TIMEZONE) != ESP_OK) {
-        ESP_LOGW(TAG, "时间服务初始化失败");
-    }
+    /* 以下均为可选外设/后台服务，失败降级不阻断启动 */
+    log_if_failed(storage_sd_init(), "SD卡挂载");
+    log_if_failed(time_service_init(TIMEZONE), "时间服务初始化");
+    log_if_failed(env_logger_init(), "环境记录任务启动");
 
     ESP_ERROR_CHECK(ui_manager_init());
     ESP_ERROR_CHECK(ui_manager_register_page(page_home_get()));
-    ESP_ERROR_CHECK(ui_manager_register_page(page_diag_get()));
+    ESP_ERROR_CHECK(ui_manager_register_page(page_env_monitor_get()));
+    ESP_ERROR_CHECK(ui_manager_register_page(page_quota_get()));
+    ESP_ERROR_CHECK(ui_manager_register_page(page_weather_get()));
     ESP_ERROR_CHECK(ui_manager_start());
 
     start_network();
