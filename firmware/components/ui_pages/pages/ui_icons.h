@@ -13,3 +13,9 @@ void icon_wifi(int x, int y, int level);
 
 /* SD卡: 切角矩形 */
 void icon_sd(int x, int y, bool present);
+
+/* 温度计: 细杆+底部圆球，约12×18px */
+void icon_thermometer(int x, int y);
+
+/* 水滴: 尖顶+圆润底部，约12×16px */
+void icon_droplet(int x, int y);
