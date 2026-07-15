@@ -189,13 +189,19 @@ SiliconFlow一致)尚未真机验证，待Key补齐后需要补一次真实调�
 - ✅ 实现I2S录放、AFE、WakeNet、VAD：真机确认模型加载(`MODEL_LOADER: Successfully
   load srmodels`)、WakeNet模型`wn9_hilexin`初始化成功、AFE初始化成功、检测任务以
   正确的单声道格式启动(`feed_chunk=512 ch=1`)
-- ✅ **生成临时WAV / 验证半双工取消 —— 代码已实现，机制经JTAG证实健全**：`p51_selftest.c`
-  已实现(唤醒→录音→`wakeword_get_utterance()`取回AFE处理后PCM→写`/sdcard/p51_test.wav`；
-  独立的cancel测试用`esp_timer`定时500ms后触发`audio_pipeline_cancel()`打断播放，不依赖
-  物理按键)，但**尚未观察到真实唤醒词触发的完整回路**——因为没有人对着设备说话，
-  `wakeword_get_utterance()`从未被真正调用过。用JTAG(见下方"已知风险"新增记录)确认了
-  `wakeword`任务的I2S读路径不存在真实死锁，只是一次瞬时多核临界区争抢，FreeRTOS任务
-  调度自行恢复正常，代码逻辑健全
+- ⚠️ **生成临时WAV / 验证半双工取消 —— 代码已实现并经审查，但从未在真机上被真正触发过**：
+  `p51_selftest.c`已实现(唤醒→录音→`wakeword_get_utterance()`取回AFE处理后PCM→写
+  `/sdcard/p51_test.wav`；独立的cancel测试用`esp_timer`定时500ms后触发
+  `audio_pipeline_cancel()`打断播放，不依赖物理按键)，但**因为没有人对着设备说话，
+  从未有真实WAKEWORD_EVENT_WAKE事件产生**——`wakeword_get_utterance()`、
+  `write_wav_to_sd()`、`run_cancel_test()`这三个函数在真机上均未被执行过一次。
+  这与"I2S读路径不存在死锁"(下方JTAG验证的内容)是两回事，不能混为一谈：JTAG只
+  证实了`wakeword`任务读麦克风数据的路径能从瞬时锁竞争中自行恢复，不代表WAV写入
+  或cancel这两条依赖真实唤醒事件才会执行的代码路径已被验证。**曾考虑过用GDB
+  `call`命令手动注入调用`run_cancel_test()`绕开真实唤醒事件，但`run_cancel_test()`
+  内部调用`wakeword_stop()`会轮询等待另一个FreeRTOS任务清理退出——在GDB halt
+  整个多核目标的情况下注入这种跨任务协调的函数调用风险很高(可能死锁调试会话或
+  留下不一致状态)，判断为不安全操作后放弃，未执行**
 - ⚠️ **连续唤醒20次无任务泄漏；录音无明显截头；播放无爆音**：**未验证**，需要
   用户对着设备说"Hi,乐鑫"触发唤醒，远程AI agent无法自动化这个动作
 
@@ -210,8 +216,9 @@ SiliconFlow一致)尚未真机验证，待Key补齐后需要补一次真实调�
   等待状态。**这是本次验证中最有力的证据**：排除了"P5.1代码导致真死锁"的可能性，
   也排除了此前怀疑的"P5.1新增task抢占CPU/I2C总线"假说(对照实验：纯P5.0固件、完全
   不含audio_pipeline/wakeword代码，同样在约10~12秒会遇到相同的串口沉默现象)
-- **未验证**(需人工)：真实唤醒词识别率、录音WAV内容正确性(声音是否清晰可辨)、
-  播放是否有爆音——这三项本质要求有人对着设备说话/听喇叭，远程AI agent无法代劳
+- **未验证**(需人工触发唤醒词说话后才能继续)：WAV文件是否真的生成、WAV内容是否
+  正确可辨、cancel机制真实触发时是否按预期打断、连续20次唤醒是否有泄漏、播放是否
+  有爆音——这些全部依赖真实WAKEWORD_EVENT_WAKE事件，缺了这个前提无法验证
 
 **固件体积**(P5.0后基线 vs P5.1后)：
 
