@@ -145,6 +145,7 @@ typedef struct {
 | env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV，同步推送sys_state） |
 | claude_quota_task | 4096 | 3 | claude_quota_client（60s轮询Mac桥接服务，mDNS+HTTP+cJSON解析，推送sys_state） |
 | weather_task | 8192 | 3 | weather_client（15分钟直连QWeather，TLS+gzip+cJSON解析，经cloud_transport，推送sys_state） |
+| wakeword_task | 8192 | 5(CPU1) | wakeword（AFE feed+fetch合并task，WakeNet推理+VAD检测+语音段缓冲；固定CPU1，避免与CPU0的WiFi/lwIP协议栈争抢触发watchdog——真机踩过CPU0饿死IDLE0的坑） |
 | *(后续新增在此登记)* | | | |
 
 ## 8. 云端与持久化约定

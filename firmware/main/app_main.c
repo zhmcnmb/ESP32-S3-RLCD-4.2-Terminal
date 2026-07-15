@@ -1,5 +1,7 @@
 #include <inttypes.h>
 
+#include "p51_selftest.h"
+
 #include "app_runtime.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
@@ -42,4 +44,8 @@ void app_main(void)
         .use_deepseek_llm = false, /* P5.0首发走SiliconFlow；切DeepSeek只改这一行 */
     };
     ESP_ERROR_CHECK(app_runtime_start(&cfg));
+
+    /* P5.1临时: 启动音频链路自检(wakeword+录音+WAV+取消测试)。
+     * P5.2正式语音助手接入后替换为 voice_assistant_start() */
+    p51_selftest_start();
 }
