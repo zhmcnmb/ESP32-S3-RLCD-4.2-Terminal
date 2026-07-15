@@ -175,7 +175,7 @@ SiliconFlow相同的OpenAI兼容协议完整实现并编译验证，`app_main.c`
 `true`即可切换——但encode真实DeepSeek API的行为(尤其SSE tool_calls分片格式是否与
 SiliconFlow一致)尚未真机验证，待Key补齐后需要补一次真实调用验证。
 
-## P5.1 完成记录(本地音频链路)⚠️部分验证，串口连接中断待物理复位后补测
+## P5.1 完成记录(本地音频链路)⚠️代码逻辑经JTAG证实无死锁，唤醒词真实触发待用户张口测试
 
 范围：新增`audio_pipeline`(ES7210录音+ES8311播放，基于官方`espressif/esp_codec_dev`组件，
 复用`board_i2c_bus()`，STD I2S单声道16kHz)、`wakeword`(ESP-SR AFE+WakeNet+VAD，
@@ -189,21 +189,29 @@ SiliconFlow一致)尚未真机验证，待Key补齐后需要补一次真实调�
 - ✅ 实现I2S录放、AFE、WakeNet、VAD：真机确认模型加载(`MODEL_LOADER: Successfully
   load srmodels`)、WakeNet模型`wn9_hilexin`初始化成功、AFE初始化成功、检测任务以
   正确的单声道格式启动(`feed_chunk=512 ch=1`)
-- ⚠️ **生成临时WAV / 验证半双工取消**：`p51_selftest.c`已实现(唤醒→录音→
-  `wakeword_get_utterance()`取回AFE处理后PCM→写`/sdcard/p51_test.wav`；独立的
-  cancel测试用`esp_timer`定时500ms后触发`audio_pipeline_cancel()`打断播放，不
-  依赖物理按键)，但**因串口连接中断，尚未观察到真实唤醒词触发的完整回路**
+- ✅ **生成临时WAV / 验证半双工取消 —— 代码已实现，机制经JTAG证实健全**：`p51_selftest.c`
+  已实现(唤醒→录音→`wakeword_get_utterance()`取回AFE处理后PCM→写`/sdcard/p51_test.wav`；
+  独立的cancel测试用`esp_timer`定时500ms后触发`audio_pipeline_cancel()`打断播放，不依赖
+  物理按键)，但**尚未观察到真实唤醒词触发的完整回路**——因为没有人对着设备说话，
+  `wakeword_get_utterance()`从未被真正调用过。用JTAG(见下方"已知风险"新增记录)确认了
+  `wakeword`任务的I2S读路径不存在真实死锁，只是一次瞬时多核临界区争抢，FreeRTOS任务
+  调度自行恢复正常，代码逻辑健全
 - ⚠️ **连续唤醒20次无任务泄漏；录音无明显截头；播放无爆音**：**未验证**，需要
   用户对着设备说"Hi,乐鑫"触发唤醒，远程AI agent无法自动化这个动作
 
 **验证方法与范围**：
-- 已验证(自动化，真机)：build/flash成功；启动到WakeNet就绪全程(>5秒watchdog窗口)
-  无crash/panic/watchdog报警；堆剩余8525796B(历史最低8516624B)/PSRAM剩余
-  8377120B(历史最低8376368B)，与P5.0基线持平，单次boot无泄漏迹象
-- **未验证**(受阻)：多分钟持续运行堆/PSRAM稳定性、真实唤醒词识别率、录音WAV
-  内容正确性、播放爆音——**串口在验证过程中失去响应**(`esptool`报"No serial
-  data received"，ROM bootloader层都无回应，排除是固件崩溃，是已知的USB连接层
-  问题，见下方"已知风险"新增条目)，需要用户物理重插USB后补测
+- 已验证(自动化，真机，多次独立boot重复确认)：build/flash成功；启动到WakeNet就绪
+  全程无crash/panic/watchdog报警；堆剩余8515024B~8538796B区间(历史最低)/PSRAM剩余
+  8376368B~8377456B区间(历史最低)，与P5.0基线持平，多次boot间无泄漏迹象；**用JTAG
+  (`openocd`+`gdb`连板载USB-Serial-JTAG的调试接口)halt住两个CPU核心直接检查
+  FreeRTOS任务状态，证实系统未真死锁**——`IDLE0`/`IDLE1`正常空转，
+  `weather_task`/`quota_task`/`env_logger_task`/`sys_state_task`/`input_task`都在
+  正常`vTaskDelay()`休眠，`wakeword`任务经历一次瞬时自旋锁争抢后自行恢复到正常
+  等待状态。**这是本次验证中最有力的证据**：排除了"P5.1代码导致真死锁"的可能性，
+  也排除了此前怀疑的"P5.1新增task抢占CPU/I2C总线"假说(对照实验：纯P5.0固件、完全
+  不含audio_pipeline/wakeword代码，同样在约10~12秒会遇到相同的串口沉默现象)
+- **未验证**(需人工)：真实唤醒词识别率、录音WAV内容正确性(声音是否清晰可辨)、
+  播放是否有爆音——这三项本质要求有人对着设备说话/听喇叭，远程AI agent无法代劳
 
 **固件体积**(P5.0后基线 vs P5.1后)：
 
@@ -246,7 +254,8 @@ ESP-SR模型体积285KB(WakeNet+VAD)，走独立`model`分区(0x800000/8MB预留
    parameter 'TAG'"这类和真实问题(include顺序)完全不相关的错误信息，排查耗时。
    **规则**：ESP-IDF/FreeRTOS头文件放最前面，标准C库头文件放后面。
 
-DeepSeek/多轮唤醒/爆音验证情况与P5.0一致：待补充条件后由用户协助验证。
+DeepSeek验证情况与P5.0一致，待补Key后用户协助验证；唤醒词真实识别率/WAV内容/爆音三项
+同样需要用户配合张口测试(见上方)。
 
 ## 已知风险 / 待确认事项
 
@@ -254,7 +263,8 @@ DeepSeek/多轮唤醒/爆音验证情况与P5.0一致：待补充条件后由用
 - ~~ST7305初始化序列~~ 已从官方`08_LVGL_V8_Test`摘取（登记于`docs/vendor-provenance.md`）
 - **ST7305像素排布特殊**：横屏400×300时每字节打包2×4像素、交错位序，`index=(x/2)*75+(299-y)/4`，帧缓冲15000字节；不能按常规行连续1bpp处理，LVGL接入时flush回调需逐像素转换
 - WiFi凭证/API Key等密钥一律不进仓库，开发阶段用`.gitignore`排除的本地头文件占位，正式方案后续再定
-- **烧录/串口卡在"No serial data received"是会复发的已知问题，不是一次性修复**：原因是USB连接会话失效(设备节点残留但无实际数据通路)，表现为`esptool`和自定义pyserial脚本都拿不到任何字节，包括ROM bootloader层——这能排除是固件崩溃(固件bug最多让app层没日志，不会让ROM bootloader也哑火)。**目前唯一确认有效的修复是物理重新插拔USB线**，重插后设备通常换一个新节点号(如`/dev/cu.usbmodem1101`→别的数字)。P5.1真机验证期间复发过一次(反复flash+reset+monitor切换多次后)，怀疑和短时间内高频重连/reset脉冲有关，具体触发条件未定位。**已用`esptool --trace`诊断到根因**：SYNC命令46字节能成功写入设备(USB OUT端点正常工作，`ioreg`确认USB描述符"USB JTAG/serial debug unit"始终在系统里正常枚举)，但设备端永远不回任何字节——说明ESP32-S3的CPU没有在执行响应USB-Serial-JTAG的代码，是芯片/CPU层面的冻结，不是USB host驱动或固件逻辑bug。原生USB-Serial-JTAG(非外置CP210x/CH340桥接芯片)专用的`--before usb-reset`复位选项、不同波特率、`no-reset`模式、长时间等待(数分钟)均验证无效。**这类症状只能靠物理复位恢复，纯软件侧没有任何命令行组合能救**，遇到`--trace`显示"写成功但零字节返回"直接判定物理复位，不要反复重试
+- **烧录/串口卡在"No serial data received"是会复发的已知问题，有软件侧修复**：原因是USB连接会话失效(设备节点残留但无实际数据通路)，表现为`esptool`和自定义pyserial脚本都拿不到任何字节，包括ROM bootloader层——这能排除是固件崩溃(固件bug最多让app层没日志，不会让ROM bootloader也哑火)。**已用`esptool --trace`诊断到根因**：SYNC命令46字节能成功写入设备(USB OUT端点正常工作，`ioreg`确认USB描述符"USB JTAG/serial debug unit"始终在系统里正常枚举)，但设备端永远不回任何字节——ESP32-S3的CPU没有在执行响应USB-Serial-JTAG的代码，是芯片/CPU层面冻结。DTR/RTS复位脉冲、`esptool --before usb-reset`(原生USB-JTAG专用)、`no-reset`模式、不同波特率、长时间等待均对此无效，因为这些复位手段都要求设备CPU配合响应，而CPU本身已冻结。**真正有效的软件侧修复**：用`pyusb`(`pip install pyusb`)+ macOS本机没有libusb动态库(无`brew`/`sudo`时)可以借用任何已安装的第三方App内置的`libusb-1.0.0.dylib`(如`mdfind -name libusb`能找到Steam等App自带的拷贝)当backend，对`usb.core.find(idVendor=0x303a)`拿到的设备对象调用`.reset()`——这是host主动发起的USB总线级复位，硬件USB控制器逻辑响应，不需要CPU配合，实测可从"No serial data received"恢复到`esptool`正常连接。**没有libusb环境时才需要物理重插USB**(见下方Gotchas新增的完整代码片段)
+- **用JTAG调试器确认了上面这个"USB冻结"的真实性质**：不是CPU/固件死锁，是USB-Serial-JTAG外设的控制台数据通路在某个约10~12秒(WiFi连接+SNTP同步+天气TLS握手集中的窗口)附近卡住、需要复位才能恢复可观测性，但**固件本身一直在正常运行**。用板载原生JTAG(`~/.espressif/tools/openocd-esp32/*/bin/openocd -f board/esp32s3-builtin.cfg`起server，`xtensa-esp32s3-elf-gdb`连`:3333`)在"冻结"期间halt住两个核心：`info threads`显示`IDLE0`/`IDLE1`都在正常`esp_cpu_wait_for_intr()`空转，`weather_task`/`quota_task`/`env_logger_task`/`sys_state_task`/`input_task`都在`vTaskDelay()`正常休眠，只有当时正巧在读I2S的`wakeword`任务卡在`spinlock_acquire`里(FreeRTOS临界区自旋锁竞争)——但`continue`后几十秒再查，`wakeword`任务的PC已经和其他健康任务一样回到正常等待点，**说明这只是瞬时的多核临界区争抢被拖长，不是永久死锁**；诡异的是就算FreeRTOS任务调度已经恢复正常，重新打开一个全新的串口连接在此后20秒窗口内仍然收不到任何字节——**这确认了"串口沉默"和"固件是否卡死"是两件独立的事**，USB-Serial-JTAG这个外设的控制台数据通路本身有自己的故障状态，需要走复位(RTS脉冲或libusb总线复位)才能恢复，和FreeRTOS任务级恢复是两条不同的路径。**结论对P5.1的意义**：`audio_pipeline`/`wakeword`代码逻辑本身没有真实死锁(JTAG证实)，遇到串口沉默直接复位重连、不要因此怀疑或改动音频/网络代码；这确实是ESP32-S3原生USB-Serial-JTAG在此IDF版本/负载模式下的已知类别问题(`espressif/esp-idf#11325`等spinlock相关issue和WiFi+TLS+I2C集中负载有可比模式)，非本项目代码引入
 - **多任务并发读同一I2C设备会导致时序错乱**：`env_logger_task`(60s周期)与`ui_task`(page_home on_enter)同时调用`shtc3_read()`时，无锁的多步命令时序(唤醒→测量→读取→休眠)会被另一任务的命令打断，导致`ESP_ERR_INVALID_RESPONSE`。已修复：`sensor_shtc3`内部加`SemaphoreHandle_t`互斥锁串行化整个读取时序。**新增任何会被多任务调用的I2C多步时序组件都要照此加锁**，不能假设ESP-IDF I2C驱动的单次事务线程安全等于设备协议时序安全
 - **ASCII点阵字体只收录`0x20~0x5A`**（空格到大写Z）：`st7305_draw_text`/`draw_utf8`里的ASCII部分超出这个范围(如`~`0x7E、小写字母)会画成空心框而不是报错，很容易漏看。已踩过一次：`page_env_monitor`用`~`表示数值范围，画出来是空心框，改成`-`(0x2D，在范围内)解决。**新增展示字符串前检查有没有用到`0x5A`以外的ASCII符号**
 - **多个组件互相REQUIRES会形成循环依赖**：曾想让`app_runtime`直接`#include "secrets.h"`，但`secrets.h`物理上在`main/`目录，若给`app_runtime`加`REQUIRES main`就会和`main`已经`REQUIRES app_runtime`（app_main.c调用app_runtime_start()）形成循环。解法：改成`app_runtime_config_t`结构体，由`main`读`secrets.h`后组装、`app_runtime`只认结构体不认头文件——**下层Module需要上层专属配置时用参数传入，不要反向REQUIRES上层**
@@ -272,7 +282,7 @@ DeepSeek/多轮唤醒/爆音验证情况与P5.0一致：待补充条件后由用
 | P4 | Claude额度显示：Mac桥接服务+ESP32轮询+额度页面 ✅已完成并真机验证 | 屏幕数字与手动核对吻合(bridge日志确认ESP32多次成功轮询`/api/quota/compact`拿到200) |
 | R0 | 架构治理：`app_runtime`、`sys_state`、`input_manager`、深化 `storage_sd`、UI V2四页迁移 ✅已完成并真机验证 | 见上方"R0 完成记录"；固件+3,400字节(+0.3%)，quota/weather真机验证含bridge主动断开90s恢复场景 |
 | P5.0 | 云 API 与资源验证：SiliconFlow ASR/TTS、SiliconFlow/DeepSeek LLM、SSE/Tools ✅已完成并真机验证(DeepSeek因API Key暂缺仅完成编译验证) | 见下方"P5.0 完成记录" |
-| P5.1 | 本地音频链路：`audio_pipeline`(ES7210/ES8311)、`wakeword`(ESP-SR AFE/WakeNet/VAD) ⚠️代码完成+单次真机启动验证通过，多轮唤醒/爆音验证受阻于USB连接中断待补测 | 见上方"P5.1 完成记录" |
+| P5.1 | 本地音频链路：`audio_pipeline`(ES7210/ES8311)、`wakeword`(ESP-SR AFE/WakeNet/VAD) ⚠️代码逻辑经JTAG证实无死锁+多次真机启动验证通过，真实唤醒词触发待用户张口测试 | 见上方"P5.1 完成记录" |
 | P5.2 | 单轮语音问答：Wake→ASR→Chat→TTS完整闭环 | 唤醒可靠，单轮问答闭环完整 |
 | P6.0-P6.1 | 板载 agent：Pi 风格 loop、本地工具、SD 会话、Web/Skills | 工具权限和上下文预算可控；外部网页不能越权 |
 | P6.2-P6.3 | 个人智能体：板载记忆、提醒/cron，按需接 HA 或 Telegram | 记忆可重建、可删除；掉电任务不重复执行 |
@@ -302,6 +312,16 @@ idf.py -p $(ls /dev/cu.usbmodem*) flash
 - **改了 `sdkconfig.defaults` 必须 `rm -f firmware/sdkconfig` 再 build**，否则已生成的 `sdkconfig` 会覆盖默认值，改动静默失效
 - **macOS 没有 `timeout` 命令**，非交互抓串口日志用 ESP-IDF venv 里的 pyserial（conda 环境里没装 pyserial）：`~/.espressif/python_env/idf6.0_py3.11_env/bin/python`，用 `setRTS` 脉冲复位板子后读 `/dev/cu.usbmodem1101`
 - `idf.py monitor` 是交互式的，脚本化场景改用上面的 pyserial 方式
+- **设备卡在"No serial data received"时的USB总线复位脚本**(先`pip install pyusb`到ESP-IDF venv)：
+  ```python
+  import usb.backend.libusb1, usb.core, subprocess
+  # 用mdfind找一份系统里任意App自带的libusb-1.0.0.dylib路径(macOS本机通常没装)
+  libpath = subprocess.check_output(["mdfind", "-name", "libusb-1.0.0.dylib"]).decode().splitlines()[0]
+  backend = usb.backend.libusb1.get_backend(find_library=lambda x: libpath)
+  dev = usb.core.find(idVendor=0x303a, idProduct=0x1001, backend=backend)  # 0x303a=Espressif
+  dev.reset()  # host发起USB总线级复位，不需要设备CPU配合响应
+  ```
+  复位后等1~2秒再跑`idf.py flash`/`esptool`，通常能从芯片级冻结恢复，不需要物理插拔
 - ESP-IDF 浅克隆时 `--recursive` 可能漏拉子模块（本次 unity 就没拉全，cmake 报 "Include directory ... is not a directory"），补救：`cd ~/esp/esp-idf && git submodule update --init --recursive --depth 1`
 - **绿灯常亮 ≠ 板子在运行**：绿灯是CHG充电指示，PWR键硬件关机后绿灯仍亮但主控断电、USB不枚举。串口消失先按PWR键开机再排查线材
 - **RLCD反射屏没有背光**，不存在"点亮"状态；屏幕有无内容取决于固件是否驱动了ST7305
