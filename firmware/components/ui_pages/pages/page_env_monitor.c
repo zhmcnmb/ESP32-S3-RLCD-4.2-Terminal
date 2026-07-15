@@ -2,21 +2,22 @@
 #include <time.h>
 
 #include "display_st7305.h"
-#include "env_logger.h"
 #include "esp_log.h"
+#include "sys_state.h"
 #include "ui_pages.h"
+#include "ui_v2.h"
 
 /*
- * 环境趋势页: 展示 env_logger 内存环形缓冲里的温湿度历史折线图。
- * 和首页的区别: 首页(page_home)是瞬时读数，这里是过去1小时的走势曲线。
- * 数据完全来自服务层(env_logger)，本页不直接读传感器(规范第5节)。
+ * 环境趋势页(趋势仪表)：先显示当前值，再显示两条共享时间方向的曲线。
+ * 只读取 sys_state 快照(env_history)，不直接依赖 env_logger(规范第6节)。
  *
- * 布局(400×300):
- *   外框        2px描边，与首页风格统一
- *   标题栏      y=6..40    "环境趋势"(scale2) + 副标题/采样计数
- *   温度趋势图  y=64..156
- *   湿度趋势图  y=160..252
- *   底部提示    y=264
+ * 布局(400×300，UI V2共享页头/页脚见 ui_v2.h):
+ *   页头        y=0..34    "环境趋势" + SD/WiFi/电池图标
+ *   采样计数    y=44       右对齐"共N条采样"
+ *   当前值      y=64       温度/湿度当前读数
+ *   温度趋势带  y=100..146
+ *   湿度趋势带  y=176..222
+ *   页脚        y=266..    KEY/VOICE/BOOT提示
  */
 
 static const char *TAG = "page_env_monitor";
@@ -25,25 +26,19 @@ static const char *TAG = "page_env_monitor";
 
 static int s_tick = 0;
 
-/* 折线图: 圆角框 + 左上角标签 + 右上角量程 + 自适应缩放折线。
- * n<2(采样不足)时只显示占位文案。 */
-static void draw_chart(int x, int y, int w, int h, const char *label,
-                       const env_logger_sample_t *samples, int n, bool is_temp)
+/* 趋势带: 标签+范围一行，下方一条自适应缩放折线，底部居中"60分钟前到现在"。
+ * 采样不足两条时保留同样高度，显示"正在积累"而不是空白大框(规范第8节) */
+static void draw_trend_band(int y, const char *label,
+                            const sys_state_env_sample_t *samples, int n, bool is_temp)
 {
-    st7305_draw_round_rect(x, y, w, h, 6, true);
-    st7305_draw_utf8(x + 10, y + 8, 1, label, true);
+    st7305_draw_utf8(20, y, 1, label, true);
 
     if (n < 2) {
-        const char *msg = "采样中…";
-        st7305_draw_utf8(x + (w - st7305_utf8_width(1, msg)) / 2, y + h / 2, 1, msg, true);
+        char msg[40];
+        snprintf(msg, sizeof(msg), "正在积累 %d/2", n);
+        st7305_draw_utf8(120, y, 1, msg, true);
         return;
     }
-
-    const int pad_top = 26, pad_bottom = 8, pad_side = 10;
-    int plot_x = x + pad_side;
-    int plot_w = w - 2 * pad_side;
-    int plot_y = y + pad_top;
-    int plot_h = h - pad_top - pad_bottom;
 
     float min_v = is_temp ? samples[0].temperature : samples[0].humidity;
     float max_v = min_v;
@@ -58,10 +53,13 @@ static void draw_chart(int x, int y, int w, int h, const char *label,
         min_v -= 0.5f;
     }
 
-    char range[32];
-    snprintf(range, sizeof(range), "%.1f-%.1f", min_v, max_v);
-    st7305_draw_utf8(x + w - 10 - st7305_utf8_width(1, range), y + 8, 1, range, true);
+    char range[16];
+    snprintf(range, sizeof(range), "%.1f", min_v);
+    st7305_draw_utf8(70, y, 1, range, true);
+    snprintf(range, sizeof(range), "%.1f", max_v);
+    st7305_draw_utf8(400 - 20 - st7305_utf8_width(1, range), y, 1, range, true);
 
+    const int plot_x = 110, plot_w = 240, plot_y = y + 14, plot_h = 22;
     int prev_x = plot_x, prev_y = plot_y;
     for (int i = 0; i < n; i++) {
         float v = is_temp ? samples[i].temperature : samples[i].humidity;
@@ -73,31 +71,36 @@ static void draw_chart(int x, int y, int w, int h, const char *label,
         prev_x = px;
         prev_y = py;
     }
+
+    const char *caption = "60分钟前 到 现在";
+    st7305_draw_utf8((400 - st7305_utf8_width(1, caption)) / 2, y + 40, 1, caption, true);
 }
 
 static void draw(void)
 {
+    sys_state_snapshot_t snap;
+    sys_state_get_snapshot(&snap);
+
     st7305_clear(false);
-    st7305_draw_rect(2, 2, 396, 296, 1, true); /* 外框，与首页风格统一 */
+    ui_v2_draw_header("环境趋势", &snap);
 
-    env_logger_sample_t samples[ENV_LOGGER_HISTORY_LEN];
-    int n = env_logger_get_history(samples, ENV_LOGGER_HISTORY_LEN);
-
-    st7305_draw_utf8(20, 6, 2, "环境趋势", true);
-
-    /* 副标题说明和首页的区别: 首页是瞬时读数，这里是历史走势 */
-    st7305_draw_utf8(20, 40, 1, "近1小时走势", true);
     char count_buf[24];
-    snprintf(count_buf, sizeof(count_buf), "共%lu条", (unsigned long)env_logger_sample_count());
-    st7305_draw_utf8(400 - 20 - st7305_utf8_width(1, count_buf), 40, 1, count_buf, true);
-    st7305_fill_rect(20, 58, 360, 1, true);
+    snprintf(count_buf, sizeof(count_buf), "共%lu条采样", (unsigned long)snap.env_sample_total);
+    st7305_draw_utf8(400 - 20 - st7305_utf8_width(1, count_buf), 44, 1, count_buf, true);
 
-    draw_chart(20, 64, 360, 92, "温度 C", samples, n, true);
-    draw_chart(20, 160, 360, 92, "湿度 %", samples, n, false);
+    int n = snap.env_history_count;
+    if (n > 0) {
+        const sys_state_env_sample_t *cur = &snap.env_history[n - 1];
+        char line[48];
+        snprintf(line, sizeof(line), "%.1f C 当前          %.0f %% 当前",
+                 cur->temperature, cur->humidity);
+        st7305_draw_utf8(20, 64, 1, line, true);
+    }
 
-    st7305_fill_rect(20, 256, 360, 1, true);
-    const char *hint = "KEY 切换页面";
-    st7305_draw_utf8((400 - st7305_utf8_width(1, hint)) / 2, 264, 1, hint, true);
+    draw_trend_band(100, "温度", snap.env_history, n, true);
+    draw_trend_band(176, "湿度", snap.env_history, n, false);
+
+    ui_v2_draw_footer("刷新");
 
     esp_err_t err = st7305_flush();
     if (err != ESP_OK) {

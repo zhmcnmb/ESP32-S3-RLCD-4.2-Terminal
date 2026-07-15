@@ -5,6 +5,7 @@
 #include "esp_check.h"
 #include "esp_event.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -14,10 +15,23 @@ static const char *TAG = "net";
 
 #define BIT_CONNECTED BIT0
 #define MAX_RETRY 5
+#define SLOW_RETRY_DELAY_US (10 * 1000 * 1000)
 
 static EventGroupHandle_t s_events;
 static net_state_t s_state = NET_DISCONNECTED;
 static int s_retry = 0;
+static esp_timer_handle_t s_retry_timer;
+static net_connected_cb_t s_connected_cb = NULL;
+static bool s_connected_once = false;
+
+/* 慢速重连定时器回调：在esp_timer服务任务上下文执行，不占用事件循环任务。
+ * esp_wifi_connect()只是把连接请求投进WiFi驱动内部队列，不在此处等待结果 */
+static void on_retry_timer(void *arg)
+{
+    (void)arg;
+    s_state = NET_CONNECTING;
+    esp_wifi_connect();
+}
 
 static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
@@ -30,16 +44,18 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         s_state = NET_DISCONNECTED;
         xEventGroupClearBits(s_events, BIT_CONNECTED);
-        /* 无限重试会拖慢启动，但断线后需要自愈: 前MAX_RETRY次快速重连，之后放缓 */
+        /* 无限重试会拖慢启动，但断线后需要自愈: 前MAX_RETRY次立即重连，
+         * 之后放缓——放缓通过esp_timer单次定时器实现，事件回调本身绝不阻塞
+         * (阻塞会卡住整个默认事件循环任务，波及所有WIFI/IP事件的派发) */
         if (s_retry < MAX_RETRY) {
             s_retry++;
             ESP_LOGW(TAG, "disconnected, retry %d/%d", s_retry, MAX_RETRY);
+            s_state = NET_CONNECTING;
+            esp_wifi_connect();
         } else {
-            ESP_LOGW(TAG, "disconnected, slow retry");
-            vTaskDelay(pdMS_TO_TICKS(10000));
+            ESP_LOGW(TAG, "disconnected, slow retry in %ds", SLOW_RETRY_DELAY_US / 1000000);
+            esp_timer_start_once(s_retry_timer, SLOW_RETRY_DELAY_US);
         }
-        s_state = NET_CONNECTING;
-        esp_wifi_connect();
         return;
     }
 
@@ -49,6 +65,14 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
         s_retry = 0;
         s_state = NET_CONNECTED;
         xEventGroupSetBits(s_events, BIT_CONNECTED);
+
+        /* 只在首次连接成功时触发一次；断线重连不必重复执行(如SNTP已在跑) */
+        if (!s_connected_once) {
+            s_connected_once = true;
+            if (s_connected_cb) {
+                s_connected_cb();
+            }
+        }
     }
 }
 
@@ -65,6 +89,12 @@ esp_err_t net_init(const char *ssid, const char *password)
 
     s_events = xEventGroupCreate();
     ESP_RETURN_ON_FALSE(s_events, ESP_ERR_NO_MEM, TAG, "event group");
+
+    const esp_timer_create_args_t timer_args = {
+        .callback = on_retry_timer,
+        .name = "net_retry",
+    };
+    ESP_RETURN_ON_ERROR(esp_timer_create(&timer_args, &s_retry_timer), TAG, "retry timer");
 
     ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "netif init");
     ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "event loop");
@@ -95,6 +125,12 @@ esp_err_t net_init(const char *ssid, const char *password)
 net_state_t net_get_state(void)
 {
     return s_state;
+}
+
+esp_err_t net_manager_register_connected_cb(net_connected_cb_t cb)
+{
+    s_connected_cb = cb;
+    return ESP_OK;
 }
 
 esp_err_t net_wait_connected(int timeout_ms)

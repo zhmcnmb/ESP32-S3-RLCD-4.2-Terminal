@@ -8,6 +8,7 @@
 #include "freertos/task.h"
 #include "sensor_shtc3.h"
 #include "storage_sd.h"
+#include "sys_state.h"
 
 static const char *TAG = "env_logger";
 
@@ -47,6 +48,22 @@ static void push_sample(const env_logger_sample_t *s)
     portEXIT_CRITICAL(&s_lock);
 }
 
+/* 每次新采样后把最新历史整体推给 sys_state，趋势页只从 sys_state 读，
+ * 不再直接依赖 env_logger_get_history()(R0页面迁移时会切换) */
+static void publish_history_snapshot(void)
+{
+    static env_logger_sample_t hist[ENV_LOGGER_HISTORY_LEN];
+    static sys_state_env_sample_t conv[ENV_LOGGER_HISTORY_LEN];
+
+    int n = env_logger_get_history(hist, ENV_LOGGER_HISTORY_LEN);
+    for (int i = 0; i < n; i++) {
+        conv[i].timestamp = hist[i].timestamp;
+        conv[i].temperature = hist[i].temperature;
+        conv[i].humidity = hist[i].humidity;
+    }
+    sys_state_apply_env_history(conv, n, s_total_count);
+}
+
 static void env_logger_task(void *arg)
 {
     (void)arg;
@@ -61,6 +78,7 @@ static void env_logger_task(void *arg)
             };
             push_sample(&s);
             append_csv(&s);
+            publish_history_snapshot();
         } else {
             ESP_LOGW(TAG, "采样失败: %s", esp_err_to_name(err));
         }

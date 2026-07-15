@@ -1,5 +1,7 @@
 #include "ui_icons.h"
 
+#include <string.h>
+
 #include "display_st7305.h"
 
 #define ICON_BLACK true
@@ -94,4 +96,49 @@ void icon_droplet(int x, int y)
     st7305_draw_line(x + 6, y, x + 1, y + 8, ICON_BLACK);
     st7305_draw_line(x + 6, y, x + 11, y + 8, ICON_BLACK);
     st7305_draw_round_rect(x, y + 6, 12, 10, 5, ICON_BLACK);
+}
+
+/* 云朵轮廓: 底部长圆角矩形 + 顶部两个凸起，近似云的锯齿感 */
+static void draw_cloud_body(int x, int y)
+{
+    st7305_draw_round_rect(x + 2, y + 16, 36, 16, 8, ICON_BLACK);
+    st7305_draw_round_rect(x + 8, y + 6, 16, 16, 8, ICON_BLACK);
+    st7305_draw_round_rect(x + 20, y + 10, 14, 14, 7, ICON_BLACK);
+}
+
+void icon_weather(int x, int y, const char *condition)
+{
+    if (!condition) {
+        condition = "";
+    }
+    if (strstr(condition, "雨")) {
+        draw_cloud_body(x, y);
+        st7305_draw_line(x + 10, y + 34, x + 6, y + 40, ICON_BLACK);
+        st7305_draw_line(x + 20, y + 34, x + 16, y + 40, ICON_BLACK);
+        st7305_draw_line(x + 30, y + 34, x + 26, y + 40, ICON_BLACK);
+    } else if (strstr(condition, "雪")) {
+        draw_cloud_body(x, y);
+        st7305_fill_rect(x + 8, y + 36, 2, 2, ICON_BLACK);
+        st7305_fill_rect(x + 18, y + 38, 2, 2, ICON_BLACK);
+        st7305_fill_rect(x + 28, y + 36, 2, 2, ICON_BLACK);
+    } else if (strstr(condition, "雾") || strstr(condition, "霾")) {
+        for (int i = 0; i < 4; i++) {
+            st7305_draw_line(x + 2, y + 10 + i * 8, x + 38, y + 10 + i * 8, ICON_BLACK);
+        }
+    } else if (strstr(condition, "云") || strstr(condition, "阴")) {
+        draw_cloud_body(x, y);
+    } else if (strstr(condition, "晴")) {
+        st7305_draw_round_rect(x + 12, y + 12, 16, 16, 8, ICON_BLACK);
+        st7305_draw_line(x + 20, y, x + 20, y + 8, ICON_BLACK);
+        st7305_draw_line(x + 20, y + 32, x + 20, y + 40, ICON_BLACK);
+        st7305_draw_line(x, y + 20, x + 8, y + 20, ICON_BLACK);
+        st7305_draw_line(x + 32, y + 20, x + 40, y + 20, ICON_BLACK);
+        st7305_draw_line(x + 6, y + 6, x + 12, y + 12, ICON_BLACK);
+        st7305_draw_line(x + 34, y + 6, x + 28, y + 12, ICON_BLACK);
+        st7305_draw_line(x + 6, y + 34, x + 12, y + 28, ICON_BLACK);
+        st7305_draw_line(x + 34, y + 34, x + 28, y + 28, ICON_BLACK);
+    } else {
+        /* 未收录类别: 通用圆形天气标记 */
+        st7305_draw_round_rect(x + 8, y + 8, 24, 24, 12, ICON_BLACK);
+    }
 }

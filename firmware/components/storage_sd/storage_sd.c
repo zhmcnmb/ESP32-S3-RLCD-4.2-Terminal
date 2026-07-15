@@ -8,16 +8,44 @@
 #include "esp_check.h"
 #include "esp_log.h"
 #include "esp_vfs_fat.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/semphr.h"
 #include "sdmmc_cmd.h"
 
 static const char *TAG = "sd";
 
+#define MAX_PATH_LEN 128
+
 static sdmmc_card_t *s_card = NULL;
+static SemaphoreHandle_t s_lock = NULL; /* 串行化所有文件操作，见头文件注释 */
+
+/* 校验rel_path并拼出挂载点下的完整路径。拒绝空路径、绝对路径(以'/'开头，
+ * 会被误解成另一套根)和任何含".."的路径段(防止越界写到挂载点外)。
+ * 调用方必须已持有s_lock或本函数自身不需要锁(纯字符串校验，不碰文件系统) */
+static esp_err_t build_path(const char *rel_path, char *out, size_t out_len)
+{
+    if (!rel_path || !out || rel_path[0] == '\0' || rel_path[0] == '/') {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (strstr(rel_path, "..") != NULL) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    int n = snprintf(out, out_len, "%s/%s", STORAGE_SD_MOUNT_POINT, rel_path);
+    if (n < 0 || (size_t)n >= out_len) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    return ESP_OK;
+}
 
 esp_err_t storage_sd_init(void)
 {
     if (s_card) {
         return ESP_OK;
+    }
+
+    if (!s_lock) {
+        s_lock = xSemaphoreCreateMutex();
+        ESP_RETURN_ON_FALSE(s_lock, ESP_ERR_NO_MEM, TAG, "mutex create failed");
     }
 
     sdmmc_host_t host = SDMMC_HOST_DEFAULT();
@@ -86,17 +114,92 @@ esp_err_t storage_sd_get_info(storage_sd_info_t *out)
 
 esp_err_t storage_sd_append_line(const char *rel_path, const char *line)
 {
-    ESP_RETURN_ON_FALSE(rel_path && line && s_card, ESP_ERR_INVALID_STATE, TAG, "未挂载或参数错");
+    ESP_RETURN_ON_FALSE(line && s_card && s_lock, ESP_ERR_INVALID_STATE, TAG, "未挂载或参数错");
 
-    char path[128];
-    snprintf(path, sizeof(path), "%s/%s", STORAGE_SD_MOUNT_POINT, rel_path);
+    char path[MAX_PATH_LEN];
+    ESP_RETURN_ON_ERROR(build_path(rel_path, path, sizeof(path)), TAG, "非法路径: %s", rel_path);
 
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     FILE *f = fopen(path, "a");
-    ESP_RETURN_ON_FALSE(f, ESP_FAIL, TAG, "打开失败: %s", path);
-
+    if (!f) {
+        xSemaphoreGive(s_lock);
+        ESP_LOGW(TAG, "打开失败: %s", path);
+        return ESP_FAIL;
+    }
     int n = fprintf(f, "%s\n", line);
     fclose(f);
+    xSemaphoreGive(s_lock);
 
     ESP_RETURN_ON_FALSE(n > 0, ESP_FAIL, TAG, "写入失败: %s", path);
+    return ESP_OK;
+}
+
+int storage_sd_read_chunk(const char *rel_path, uint32_t offset, void *buf, size_t buf_len)
+{
+    if (!buf || buf_len == 0 || !s_card || !s_lock) {
+        return 0;
+    }
+
+    char path[MAX_PATH_LEN];
+    if (build_path(rel_path, path, sizeof(path)) != ESP_OK) {
+        return 0;
+    }
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        xSemaphoreGive(s_lock);
+        return 0;
+    }
+    if (fseek(f, (long)offset, SEEK_SET) != 0) {
+        fclose(f);
+        xSemaphoreGive(s_lock);
+        return 0;
+    }
+    size_t n = fread(buf, 1, buf_len, f);
+    fclose(f);
+    xSemaphoreGive(s_lock);
+    return (int)n;
+}
+
+esp_err_t storage_sd_atomic_replace(const char *rel_path, const void *data, size_t len)
+{
+    ESP_RETURN_ON_FALSE(data && s_card && s_lock, ESP_ERR_INVALID_STATE, TAG, "未挂载或参数错");
+
+    char path[MAX_PATH_LEN];
+    ESP_RETURN_ON_ERROR(build_path(rel_path, path, sizeof(path)), TAG, "非法路径: %s", rel_path);
+
+    char tmp_path[MAX_PATH_LEN + 4];
+    int tn = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    ESP_RETURN_ON_FALSE((size_t)tn < sizeof(tmp_path), ESP_ERR_INVALID_SIZE, TAG, "路径过长");
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t ret = ESP_OK;
+    FILE *f = fopen(tmp_path, "w");
+    if (!f) {
+        ret = ESP_FAIL;
+    } else {
+        size_t written = fwrite(data, 1, len, f);
+        int close_err = fclose(f);
+        if (written != len || close_err != 0) {
+            ret = ESP_FAIL;
+            remove(tmp_path); /* 写失败别留半截临时文件 */
+        } else if (rename(tmp_path, path) != 0) {
+            ret = ESP_FAIL;
+            remove(tmp_path);
+        }
+    }
+    xSemaphoreGive(s_lock);
+
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "原子替换失败: %s", path);
+    }
+    return ret;
+}
+
+esp_err_t storage_sd_checkpoint(void)
+{
+    /* 当前所有写入(append/atomic_replace)都在同一次调用内完整open+write+close，
+     * 返回时数据已经落盘，这里没有额外待落盘状态可刷。见头文件注释 */
     return ESP_OK;
 }

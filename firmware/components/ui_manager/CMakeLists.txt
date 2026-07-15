@@ -1,3 +1,3 @@
 idf_component_register(SRCS "ui_manager.c"
                        INCLUDE_DIRS "include"
-                       REQUIRES board_rlcd42)
+                       REQUIRES display_st7305 input_manager)

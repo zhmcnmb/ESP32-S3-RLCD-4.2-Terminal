@@ -19,3 +19,7 @@ void icon_thermometer(int x, int y);
 
 /* 水滴: 尖顶+圆润底部，约12×16px */
 void icon_droplet(int x, int y);
+
+/* 天气现象图标，40×40，按condition关键字匹配(雨/雪/雾/云|阴/晴)，
+ * 未收录类别画通用圆形标记，不引入位图资源(规范第10节) */
+void icon_weather(int x, int y, const char *condition);
