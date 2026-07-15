@@ -58,7 +58,8 @@ static void start_network(const app_runtime_config_t *cfg)
     }
 
     log_if_failed(claude_quota_client_init(cfg->bridge_mdns_host, cfg->bridge_port), "Claude用量客户端启动");
-    log_if_failed(weather_client_init(cfg->bridge_mdns_host, cfg->bridge_port), "天气客户端启动");
+    log_if_failed(weather_client_init(cfg->qweather_api_key, cfg->qweather_api_host, cfg->qweather_location),
+                  "天气客户端启动");
 }
 
 esp_err_t app_runtime_start(const app_runtime_config_t *cfg)

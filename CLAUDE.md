@@ -46,7 +46,7 @@ P5起新增功能继续遵守这条依赖方向，不要为语音/agent开临时
 | `battery` | 电池电压ADC(GPIO4,3倍分压,eFuse校准)，电量百分比估算 |
 | `env_logger` | 后台任务60s采样SHTC3，环形缓冲(1小时窗口)+CSV落盘(经`storage_sd`)，每次采样后把历史整体推给`sys_state` |
 | `claude_quota_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/quota/compact`+cJSON解析，60s周期，结果推给`sys_state`(登记于coding-standards第7节) |
-| `weather_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/weather`+cJSON解析，15分钟周期，结果推给`sys_state`。**不直连QWeather**，原因见下方"P3 天气代理"一节 |
+| `weather_client` | 设备直连QWeather `/v7/weather/now`（HTTPS+cJSON解析），15分钟周期，结果推给`sys_state`。经`cloud_transport`组件走TLS+gzip解压，原因见下方"P3 天气架构"一节 |
 
 **待实现**
 
@@ -108,11 +108,15 @@ P5起新增功能继续遵守这条依赖方向，不要为语音/agent开临时
 
 `bridge/`桥接服务改为：定时(如60s)`subprocess`调用`omp usage --provider anthropic --json`并解析，替代原jsonl增量解析方案。详见`bridge/README.md`。
 
-## P3 天气代理（重要设计决定）
+## P3 天气架构（2026-07-15由代理转发改为设备直连，决定已变更）
 
-`weather_client` **不直连QWeather**，改走`bridge/`代理转发，和P4 Claude用量走同一个桥接服务。原因：实测确认QWeather新版API Host（项目专属域名）**不管请求方Accept-Encoding怎么设都强制gzip压缩响应**（试过`--compressed`和`Accept-Encoding: identity`，服务端一律无视）。ESP-IDF的`esp_http_client`不做自动gzip解压，要在ESP32上解得接ROM里阉割版的miniz `tinfl`函数手动解，还要为HTTPS额外引入`mbedtls`+`esp_crt_bundle`整套证书链——工程量不小、固件体积显著增大(实测：直连方案73%可用空间→改代理后不用HTTPS/gzip，涨回来了)。
+`weather_client` 现在**设备直连**QWeather，不再经`bridge/`代理。原设计（代理转发）的技术顾虑是：QWeather新版API Host（项目专属域名）**不管请求方Accept-Encoding怎么设都强制gzip压缩响应**（试过`--compressed`和`Accept-Encoding: identity`，服务端一律无视），需要TLS+gzip解压，工程量和固件体积顾虑一度让代理转发看起来更划算。
 
-Python标准库`gzip.decompress()`一行代码解决，所以`bridge/server.py`新增`fetch_weather()`+`/api/weather`接口代理转发，ESP32端`weather_client`复用`claude_quota_client`已验证过的mDNS发现机制走局域网**明文HTTP**。副作用是好事：和风天气API Key不再进入烧录进设备的固件（`secrets.h`），只留在Mac本地`bridge/config.local.json`（已`.gitignore`），比直连方案密钥暴露面更小。详见`bridge/server.py`头注释与`bridge/README.md`。
+改为直连的原因：P5.0引入`cloud_transport`组件（TLS证书校验+SSE，为SiliconFlow/DeepSeek准备）后，HTTPS基础设施本来就要有，天气顺带复用不再是"额外成本"。gzip解压实测**零额外代码体积**——ESP32 ROM自带miniz的`tinfl_decompress`函数（`rom/miniz.h`），只需手动剥离10字节gzip容器头（RFC1952，含FEXTRA/FNAME/FCOMMENT可选字段处理）再喂给ROM函数，不需要vendor任何第三方代码。
+
+**踩过的坑**：`tinfl_decompress_mem_to_mem()`便捷封装内部会把约11KB的`tinfl_decompressor`结构体（3张huffman表）放在调用者的栈上，`weather_task`默认4096字节栈直接被打爆导致`stack overflow`重启。改用底层`tinfl_decompress()`+`calloc`堆分配规避，`weather_task`栈同时提高到8192字节（TLS握手本身也有栈开销）。**任何调用ROM miniz解压函数的组件都要留意这个坑**，不要用`_mem_to_mem`系列便捷函数。
+
+实测：真机确认`esp-x509-crt-bundle: Certificate validated`（TLS证书链校验通过），bridge日志确认重启后再无`/api/weather`请求。QWeather API Key现已进入`secrets.h`（`QWEATHER_API_KEY`/`QWEATHER_API_HOST`/`QWEATHER_LOCATION`），`bridge/`只保留P4 Claude用量代理（数据源`omp usage`命令本来就只能在Mac本地跑，没有直连替代方案）。`bridge/config.local.json`已删除（原来唯一内容就是QWeather配置）。
 
 ## 已知风险 / 待确认事项
 

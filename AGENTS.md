@@ -27,7 +27,7 @@ app_runtime       启动顺序、注册、降级策略
 
 当前 `app_main()` 的启动顺序仍是：芯片信息 → board/display/RTC/SHTC3/battery → SD/time/env logger（可选）→ UI 注册/启动 → 网络、额度、天气、SNTP。R0 把这段编排移入 `app_runtime`；`app_main()` 最终只保留芯片诊断与 `app_runtime_start()`。
 
-**桥接服务**（`bridge/server.py`，跑在Mac本地，非ESP32固件的一部分）：ESP32通过mDNS解析Mac主机名+局域网HTTP轮询它，代理转发两类数据——Claude订阅用量(`omp usage`)、和风天气(避免ESP32直连处理QWeather强制gzip响应)。详见 `bridge/README.md`。
+**桥接服务**（`bridge/server.py`，跑在Mac本地，非ESP32固件的一部分）：ESP32通过mDNS解析Mac主机名+局域网HTTP轮询它，代理转发Claude订阅用量(`omp usage`)。天气(`weather_client`)不走桥接，设备经`cloud_transport`组件直连QWeather(HTTPS+TLS证书校验+ROM miniz解gzip)。详见 `bridge/README.md` 与 `CLAUDE.md` "P3 天气架构"一节。
 
 ## 关键目录
 
@@ -46,15 +46,15 @@ app_runtime       启动顺序、注册、降级策略
 | `firmware/components/battery/` | 电池电压ADC读取 |
 | `firmware/components/env_logger/` | 后台任务60s采样温湿度，环形缓冲(1小时窗口)+CSV落盘 |
 | `firmware/components/claude_quota_client/` | mDNS解析桥接服务+HTTP轮询`/api/quota/compact`，60s周期 |
-| `firmware/components/weather_client/` | mDNS解析桥接服务+HTTP轮询`/api/weather`，15分钟周期 |
+| `firmware/components/weather_client/` | 设备直连QWeather `/v7/weather/now`(HTTPS+cJSON解析)，经`cloud_transport`走TLS+gzip解压，15分钟周期 |
 | `firmware/components/app_runtime/` *(P5前置)* | 启动顺序、页面/功能注册、可选能力降级 |
 | `firmware/components/sys_state/` *(P5前置)* | 线程安全状态快照、事件、命令；UI/工具的唯一共享状态入口 |
 | `firmware/components/input_manager/` *(P5前置)* | KEY/BOOT 消抖、长短按与语义输入事件 |
-| `firmware/components/cloud_transport/` *(P5)* | TLS、HTTP 流、SSE、取消和重试；云 client 不重复实现这些细节 |
+| `firmware/components/cloud_transport/` | 阻塞式HTTPS `get`(TLS证书校验+gzip自动解压)，`weather_client`已在用；stream/SSE/取消留给P5.0按需扩展 |
 | `firmware/components/memory_engine/` *(P6)* | SD 上的会话、画像、长期记忆日志、索引、召回与维护 |
 | `tools/` | `gen_font.py`(中文字库生成器) + `charset.txt`(手工补充字符集，仅运行时才出现的文案用) |
 | `docs/` | `coding-standards.md`(强制开发规范)、`hardware-pinmap.md`(引脚权威表)、`vendor-provenance.md`(摘取代码来源登记) |
-| `bridge/` | Mac本地HTTP桥接服务(`server.py`)：代理Claude用量+天气，`config.local.json`(gitignore)存和风天气凭据 |
+| `bridge/` | Mac本地HTTP桥接服务(`server.py`)：只代理Claude用量(P4)。天气(P3)已改为设备直连，不再经bridge |
 
 ## 开发命令
 
@@ -75,10 +75,10 @@ idf.py -p $(ls /dev/cu.usbmodem*) flash
 idf.py monitor               # 交互式；脚本化场景见下方 Gotchas
 ```
 
-启动Mac侧桥接服务（Claude用量+天气页面需要它在线才有数据，否则降级显示"不可达"）：
+启动Mac侧桥接服务（Claude用量页面需要它在线才有数据，否则降级显示"不可达"；天气页面不依赖bridge，设备直连QWeather）：
 
 ```bash
-python3 bridge/server.py [--port 8787] [--refresh 60] [--weather-refresh 900]
+python3 bridge/server.py [--port 8787] [--refresh 60]
 ```
 
 改中文字库（改了源码字符串或 `tools/charset.txt` 之后必须重跑，否则屏幕显示空心框）：
@@ -115,7 +115,7 @@ python3 tools/gen_font.py   # 扫描 firmware/ 中文字面量 + charset.txt，�
 - **云与记忆**：SiliconFlow/DeepSeek 的模型名、base URL、超时和凭据引用配置化。会话、Skill、任务和长期记忆都经 `storage_sd` 与板载 `memory_engine` 管理；云模型只可提议记忆，最终写入、检索、删除和索引必须在设备完成。
 - **注释**：写"为什么"不写"是什么"；硬件魔数/寄存器序列(如ST7305交错位序)必须注释解释来源；全项目中文注释。
 - **Vendor代码**：从官方demo摘任何代码片段必须同步在 `docs/vendor-provenance.md` 登记来源路径+commit，摘来的寄存器序列/魔数不准"顺手优化"。
-- **密钥**：WiFi密码等一律不进仓库，开发期放 `firmware/main/secrets.h`(已gitignore)，模板见同目录 `secrets.h.example`。和风天气凭据更进一步——不进设备固件，只存Mac本地 `bridge/config.local.json`(也已gitignore)，由桥接服务代理转发。
+- **密钥**：WiFi密码、和风天气API Key、SiliconFlow/DeepSeek API Key 等一律不进仓库，开发期放 `firmware/main/secrets.h`(已gitignore)，模板见同目录 `secrets.h.example`。
 - **字体渲染陷阱**：ASCII点阵字体只收录 `0x20~0x5A`(空格到大写Z)，超范围字符(如`~`、小写字母)画成空心框而非报错，新增展示字符串前要检查。
 
 ## 重要文件
@@ -129,8 +129,7 @@ python3 tools/gen_font.py   # 扫描 firmware/ 中文字面量 + charset.txt，�
 - `firmware/components/ui_pages/pages/page_diag.c` — 新增页面的结构范例
 - `firmware/components/board_rlcd42/include/board_rlcd42.h` — 全项目唯一引脚宏来源
 - `tools/gen_font.py` / `tools/charset.txt` — 中文字库生成（输出 `firmware/components/display_st7305/font_cn16.c`，勿手工编辑）
-- `bridge/server.py` — Mac本地桥接服务，代理Claude用量(`omp usage`)+天气(QWeather，处理gzip)
-- `bridge/config.local.json.example` — 和风天气凭据模板（复制为 `config.local.json`）
+- `bridge/server.py` — Mac本地桥接服务，只代理Claude用量(`omp usage`)
 - `docs/coding-standards.md` — 强制开发规范（改代码前必读）
 - `docs/voice-agent-design.md` — P5-P8 的板载智能体、记忆、联网工具与验收路线权威设计
 - `docs/r0-ui-v2-spec.md` — P5 前置架构治理与现有四页 UI V2 的实施/验收规格
@@ -142,15 +141,15 @@ python3 tools/gen_font.py   # 扫描 firmware/ 中文字面量 + charset.txt，�
 - **框架**：ESP-IDF v6.0.2（装在 `~/esp/esp-idf`），非 Arduino。
 - **工具链**：`~/.espressif`；cmake/ninja 等前置依赖装在 conda 环境 `esp-idf-tools`（不用 base，避免污染）——每个新终端必须 `conda activate esp-idf-tools && source ~/esp/esp-idf/export.sh`。
 - **目标芯片**：`esp32s3`（ESP32-S3-WROOM-1-N16R8，双核240MHz，16MB Flash，8MB Octal PSRAM）。
-- **依赖管理**：`claude_quota_client`/`weather_client` 各自的 `idf_component.yml` 声明了 `espressif/mdns` + `espressif/cjson`(通过ESP-IDF Component Manager自动拉取到 `firmware/managed_components/`)。board级特有代码(如ST7305初始化寄存器序列)按需摘取到自建component并登记 `docs/vendor-provenance.md`。**不整仓引入**官方 demo 仓库。
+- **依赖管理**：`claude_quota_client`(`espressif/mdns`+`espressif/cjson`)、`weather_client`(`espressif/cjson`)各自 `idf_component.yml` 声明，通过ESP-IDF Component Manager自动拉取到 `firmware/managed_components/`。board级特有代码(如ST7305初始化寄存器序列)按需摘取到自建component并登记 `docs/vendor-provenance.md`。**不整仓引入**官方 demo 仓库。
 - **字库生成脚本**依赖 Pillow(`PIL`)，用系统字体 `/System/Library/Fonts/STHeiti Medium.ttc`(macOS专用路径)。
-- **桥接服务**（`bridge/server.py`）纯Python标准库，零pip依赖；依赖 `omp` CLI在PATH(Claude用量)；天气凭据配在 `bridge/config.local.json`。
+- **桥接服务**（`bridge/server.py`）纯Python标准库，零pip依赖；只代理Claude用量，依赖 `omp` CLI在PATH。天气(`weather_client`)设备直连QWeather，凭据配在 `firmware/main/secrets.h`。
 - **macOS 没有 `timeout` 命令**：脚本化抓串口日志改用 ESP-IDF venv 的 pyserial（`~/.espressif/python_env/idf6.0_py3.11_env/bin/python`）。
 - 改了 `sdkconfig.defaults` 必须 `rm -f firmware/sdkconfig` 再 build，否则已生成的 `sdkconfig` 会覆盖默认值、改动静默失效。
 
 ## 测试与QA
 
-**无自动化测试套件**（无 unit test、无 CI、无 lint/format 配置）——验证方式是**真机烧录 + 实测**，按 `CLAUDE.md` 中的分阶段路线图逐阶段验证。网络类功能(quota/weather)额外靠桥接服务访问日志确认ESP32真实IP发起过成功请求，不只是"编译通过"。
+**无自动化测试套件**（无 unit test、无 CI、无 lint/format 配置）——验证方式是**真机烧录 + 实测**，按 `CLAUDE.md` 中的分阶段路线图逐阶段验证。Claude用量额外靠桥接服务访问日志确认ESP32真实IP发起过成功请求；天气额外靠设备日志确认 `esp-x509-crt-bundle: Certificate validated`(TLS证书链校验通过)，不只是"编译通过"。
 
 提交前检查清单（`docs/coding-standards.md` 第12节）：
 - [ ] 没有裸 GPIO 号散落在 `board_rlcd42` 之外

@@ -42,7 +42,7 @@ app_runtime                 启动顺序、功能注册、降级策略
 | `sys_state` | read snapshot、apply event、post command | 锁、事件循环、版本与订阅 |
 | `input_manager` | 发布语义输入事件 | GPIO、消抖、长短按、上下文映射 |
 | `storage_sd` | append、stream read、atomic replace、checkpoint | FATFS、路径约束、串行写、掉电恢复 |
-| `cloud_transport` | request、stream callback、cancel | TLS、证书、chunked、SSE、超时、限流 |
+| `cloud_transport` | 目前只有阻塞式 `get`（TLS+可选gzip自动解压，`weather_client`已在用）；stream callback、cancel 待P5.0接入SiliconFlow/DeepSeek时按实际需要扩展，不预先实现 | TLS、证书、gzip容器解析、超时 |
 | `memory_engine` | recall、record、forget、maintain | 日志、索引、TTL、墓碑、压缩、重建 |
 
 - 不为“以后可能”建立 Interface。只有确实存在两个 Adapter 时才建立外部 seam；例如 SiliconFlow 与 DeepSeek 使 `llm_provider` 成为真实 seam。
@@ -144,7 +144,7 @@ typedef struct {
 | sys_state_task | 3072 | 2 | sys_state（10s轮询瞬时温湿度/电池/WiFi/SD状态，写入共享快照） |
 | env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV，同步推送sys_state） |
 | claude_quota_task | 4096 | 3 | claude_quota_client（60s轮询Mac桥接服务，mDNS+HTTP+cJSON解析，推送sys_state） |
-| weather_task | 4096 | 3 | weather_client（15分钟轮询Mac桥接服务，mDNS+HTTP+cJSON解析，推送sys_state） |
+| weather_task | 8192 | 3 | weather_client（15分钟直连QWeather，TLS+gzip+cJSON解析，经cloud_transport，推送sys_state） |
 | *(后续新增在此登记)* | | | |
 
 ## 8. 云端与持久化约定
