@@ -26,3 +26,16 @@ CONFIG_FATFS_USE_FASTSEEK=y
 
 # 默认日志级别
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ESP-SR (P5.1): 唤醒词选 "Hi,乐鑫"(wn9_hilexin)，模型从flash读取
+CONFIG_MODEL_IN_FLASH=y
+CONFIG_AFE_INTERFACE_V1=y
+CONFIG_SR_NSN_WEBRTC=y
+CONFIG_SR_VADN_WEBRTC=y
+CONFIG_SR_WN_WN9_HILEXIN=y
+
+# wakeword task(WakeNet推理)固定跑CPU1，持续占用CPU是AI推理设计使然，
+# 不是hang——真机验证时IDLE1因此拿不到5秒累计空闲时间触发task watchdog
+# 误报。CPU0(WiFi/lwIP协议栈+其余业务task)的IDLE0检查保留，用于捕获
+# 真实死锁
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n

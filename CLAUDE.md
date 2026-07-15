@@ -175,13 +175,86 @@ SiliconFlow相同的OpenAI兼容协议完整实现并编译验证，`app_main.c`
 `true`即可切换——但encode真实DeepSeek API的行为(尤其SSE tool_calls分片格式是否与
 SiliconFlow一致)尚未真机验证，待Key补齐后需要补一次真实调用验证。
 
+## P5.1 完成记录(本地音频链路)⚠️部分验证，串口连接中断待物理复位后补测
+
+范围：新增`audio_pipeline`(ES7210录音+ES8311播放，基于官方`espressif/esp_codec_dev`组件，
+复用`board_i2c_bus()`，STD I2S单声道16kHz)、`wakeword`(ESP-SR AFE+WakeNet+VAD，
+`espressif/esp-sr` 2.4.0，唤醒词`wn9_hilexin`"Hi,乐鑫")两个组件；`main/p51_selftest.c`
+临时验证唤醒→录音→生成WAV→半双工取消完整链路(P5.2接入真实语音助手后删除)。
+
+**验收标准核对**(对照`docs/voice-agent-design.md` P5.1节)：
+- ✅ 复用ES7210/ES8311时钟和I2S配置：真机确认`ES8311: Work in Slave mode`、
+  `ES7210: Enable ES7210_INPUT_MIC1`、`audio_pipeline: 就绪`日志，双工I2S单声道
+  16kHz 16bit初始化成功
+- ✅ 实现I2S录放、AFE、WakeNet、VAD：真机确认模型加载(`MODEL_LOADER: Successfully
+  load srmodels`)、WakeNet模型`wn9_hilexin`初始化成功、AFE初始化成功、检测任务以
+  正确的单声道格式启动(`feed_chunk=512 ch=1`)
+- ⚠️ **生成临时WAV / 验证半双工取消**：`p51_selftest.c`已实现(唤醒→录音→
+  `wakeword_get_utterance()`取回AFE处理后PCM→写`/sdcard/p51_test.wav`；独立的
+  cancel测试用`esp_timer`定时500ms后触发`audio_pipeline_cancel()`打断播放，不
+  依赖物理按键)，但**因串口连接中断，尚未观察到真实唤醒词触发的完整回路**
+- ⚠️ **连续唤醒20次无任务泄漏；录音无明显截头；播放无爆音**：**未验证**，需要
+  用户对着设备说"Hi,乐鑫"触发唤醒，远程AI agent无法自动化这个动作
+
+**验证方法与范围**：
+- 已验证(自动化，真机)：build/flash成功；启动到WakeNet就绪全程(>5秒watchdog窗口)
+  无crash/panic/watchdog报警；堆剩余8525796B(历史最低8516624B)/PSRAM剩余
+  8377120B(历史最低8376368B)，与P5.0基线持平，单次boot无泄漏迹象
+- **未验证**(受阻)：多分钟持续运行堆/PSRAM稳定性、真实唤醒词识别率、录音WAV
+  内容正确性、播放爆音——**串口在验证过程中失去响应**(`esptool`报"No serial
+  data received"，ROM bootloader层都无回应，排除是固件崩溃，是已知的USB连接层
+  问题，见下方"已知风险"新增条目)，需要用户物理重插USB后补测
+
+**固件体积**(P5.0后基线 vs P5.1后)：
+
+| 指标 | P5.0后 | P5.1后 | 差值 |
+|---|---|---|---|
+| 固件总镜像 | 1,189,147 字节 | 1,620,912 字节 | +431,765字节(+36.3%，主要是ESP-SR预编译库) |
+| 应用分区剩余 | 72% | 61% | -11pp |
+| 启动完成时堆剩余 | 约8.55MB | 约8.53MB | 基本持平 |
+| 启动完成时PSRAM剩余 | 约8.38MB | 约8.38MB | 基本持平 |
+
+ESP-SR模型体积285KB(WakeNet+VAD)，走独立`model`分区(0x800000/8MB预留，已用不到
+4%)，不占app分区。分区表4MB app够用(61%剩余)，暂不需要OTA决策门。
+
+**踩过的坑**：
+1. **ESP-IDF 6.0移除内置`json`组件**：`espressif/esp-sr` 2.4.0的CMakeLists仍
+   `REQUIRES json`(旧IDF内置组件名，实为cJSON)，但IDF 6.0已将其移到组件仓库
+   `espressif/cjson`。新建本地桥接组件`components/json/`(`REQUIRES
+   espressif__cjson`，靠REQUIRES的传递include路径把`cJSON.h`暴露给esp-sr)解决，
+   不改managed_components。
+2. **esp-dsp 1.7.0 kalman模块在C++26/picolibc下编译失败**：`std::cos`/`std::sin`/
+   `std::atan`未`#include <cmath>`导致`error: 'cos' is not a member of 'std'`。
+   ESP-SR只依赖esp-dsp的FFT/矩阵/点积运算，不需要kalman EKF——直接从managed
+   component的CMakeLists移除kalman源文件行绕过(上游修复前的workaround，
+   `fullclean`重拉依赖后需要重新打这个补丁)。
+3. **AFE input_format声道数必须与实际硬件声道数一致**：`afe_config_init()`首次
+   用`"MNR"`(单麦+未用+参考回采，3声道)，但`audio_pipeline`的ES7210配置是STD
+   I2S单声道(`mic_selected=MIC1`)，没有TDM多声道也没有AEC参考。声道数不匹配导致
+   `feed_nch=3`但数据源只有1个真实声道，AFE把连续mono数据错误按3声道交错解读
+   (真机日志`ch=3`暴露此问题)。改成`"M"`(单声道)后`ch=1`，数据解读恢复正确。
+4. **WakeNet持续推理是合法CPU占用，不是hang，但会误触发IDLE task watchdog**：
+   `wakeword_task`固定跑单核做AI推理，导致该核心IDLE task拿不到5秒累计空闲时间，
+   `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU0/CPU1`默认都开启会报"task_wdt got
+   triggered"误报(先后在CPU0、CPU1都复现过，说明是任务本身CPU占用高，不是某个
+   核心特有问题)。**规则**：把`wakeword`任务和`afe_config->afe_perferred_core`
+   统一固定到CPU1(避开CPU0的WiFi/lwIP协议栈)，并在sdkconfig.defaults关闭
+   `CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1`(保留CPU0检查用于捕获真实死锁)。
+5. **main组件混合include标准C头文件和FreeRTOS/ESP-IDF头文件顺序错误会产生
+   诡异的宏级联解析错误**：`p51_selftest.c`最初把`#include <string.h>`/
+   `<math.h>`放在`freertos/queue.h`之前，编译器报"storage class specified for
+   parameter 'TAG'"这类和真实问题(include顺序)完全不相关的错误信息，排查耗时。
+   **规则**：ESP-IDF/FreeRTOS头文件放最前面，标准C库头文件放后面。
+
+DeepSeek/多轮唤醒/爆音验证情况与P5.0一致：待补充条件后由用户协助验证。
+
 ## 已知风险 / 待确认事项
 
 - ~~SD卡引脚~~ 已确认：SDMMC外设1-bit模式，CLK=38/CMD=21/D0=39，与显示SPI无冲突（详见`docs/hardware-pinmap.md`）
 - ~~ST7305初始化序列~~ 已从官方`08_LVGL_V8_Test`摘取（登记于`docs/vendor-provenance.md`）
 - **ST7305像素排布特殊**：横屏400×300时每字节打包2×4像素、交错位序，`index=(x/2)*75+(299-y)/4`，帧缓冲15000字节；不能按常规行连续1bpp处理，LVGL接入时flush回调需逐像素转换
 - WiFi凭证/API Key等密钥一律不进仓库，开发阶段用`.gitignore`排除的本地头文件占位，正式方案后续再定
-- ~~烧录卡在"No serial data received"~~ 已解决：原因是USB连接会话失效(设备节点`/dev/cu.usbmodem101`残留但无实际数据通路)，**重新插拔USB后设备换了新节点`/dev/cu.usbmodem1101`即可正常烧录**——纯软件侧(检查`ioreg`枚举、DTR/RTS复位脉冲)排查不出这类情况，本质是物理连接层，遇到同症状先重插USB
+- **烧录/串口卡在"No serial data received"是会复发的已知问题，不是一次性修复**：原因是USB连接会话失效(设备节点残留但无实际数据通路)，表现为`esptool`和自定义pyserial脚本都拿不到任何字节，包括ROM bootloader层——这能排除是固件崩溃(固件bug最多让app层没日志，不会让ROM bootloader也哑火)。**目前唯一确认有效的修复是物理重新插拔USB线**，重插后设备通常换一个新节点号(如`/dev/cu.usbmodem1101`→别的数字)。P5.1真机验证期间复发过一次(反复flash+reset+monitor切换多次后)，怀疑和短时间内高频重连/reset脉冲有关，具体触发条件未定位。纯软件侧重试(降波特率、`--before no-reset`、`erase-flash`、等待重试)排查不出这类情况，遇到同症状不要反复重试，直接提示用户重插USB
 - **多任务并发读同一I2C设备会导致时序错乱**：`env_logger_task`(60s周期)与`ui_task`(page_home on_enter)同时调用`shtc3_read()`时，无锁的多步命令时序(唤醒→测量→读取→休眠)会被另一任务的命令打断，导致`ESP_ERR_INVALID_RESPONSE`。已修复：`sensor_shtc3`内部加`SemaphoreHandle_t`互斥锁串行化整个读取时序。**新增任何会被多任务调用的I2C多步时序组件都要照此加锁**，不能假设ESP-IDF I2C驱动的单次事务线程安全等于设备协议时序安全
 - **ASCII点阵字体只收录`0x20~0x5A`**（空格到大写Z）：`st7305_draw_text`/`draw_utf8`里的ASCII部分超出这个范围(如`~`0x7E、小写字母)会画成空心框而不是报错，很容易漏看。已踩过一次：`page_env_monitor`用`~`表示数值范围，画出来是空心框，改成`-`(0x2D，在范围内)解决。**新增展示字符串前检查有没有用到`0x5A`以外的ASCII符号**
 - **多个组件互相REQUIRES会形成循环依赖**：曾想让`app_runtime`直接`#include "secrets.h"`，但`secrets.h`物理上在`main/`目录，若给`app_runtime`加`REQUIRES main`就会和`main`已经`REQUIRES app_runtime`（app_main.c调用app_runtime_start()）形成循环。解法：改成`app_runtime_config_t`结构体，由`main`读`secrets.h`后组装、`app_runtime`只认结构体不认头文件——**下层Module需要上层专属配置时用参数传入，不要反向REQUIRES上层**
@@ -199,7 +272,8 @@ SiliconFlow一致)尚未真机验证，待Key补齐后需要补一次真实调�
 | P4 | Claude额度显示：Mac桥接服务+ESP32轮询+额度页面 ✅已完成并真机验证 | 屏幕数字与手动核对吻合(bridge日志确认ESP32多次成功轮询`/api/quota/compact`拿到200) |
 | R0 | 架构治理：`app_runtime`、`sys_state`、`input_manager`、深化 `storage_sd`、UI V2四页迁移 ✅已完成并真机验证 | 见上方"R0 完成记录"；固件+3,400字节(+0.3%)，quota/weather真机验证含bridge主动断开90s恢复场景 |
 | P5.0 | 云 API 与资源验证：SiliconFlow ASR/TTS、SiliconFlow/DeepSeek LLM、SSE/Tools ✅已完成并真机验证(DeepSeek因API Key暂缺仅完成编译验证) | 见下方"P5.0 完成记录" |
-| P5.1-P5.2 | 语音链路：音频、ESP-SR、Wake/VAD/ASR/LLM/TTS | 唤醒可靠，单轮问答闭环完整 |
+| P5.1 | 本地音频链路：`audio_pipeline`(ES7210/ES8311)、`wakeword`(ESP-SR AFE/WakeNet/VAD) ⚠️代码完成+单次真机启动验证通过，多轮唤醒/爆音验证受阻于USB连接中断待补测 | 见上方"P5.1 完成记录" |
+| P5.2 | 单轮语音问答：Wake→ASR→Chat→TTS完整闭环 | 唤醒可靠，单轮问答闭环完整 |
 | P6.0-P6.1 | 板载 agent：Pi 风格 loop、本地工具、SD 会话、Web/Skills | 工具权限和上下文预算可控；外部网页不能越权 |
 | P6.2-P6.3 | 个人智能体：板载记忆、提醒/cron，按需接 HA 或 Telegram | 记忆可重建、可删除；掉电任务不重复执行 |
 | P7-P8 | 可选 Companion 与产品化：仅重型能力、稳定性、OTA、安全 | Companion 断开不影响 L1-L4；长期运行稳定 |

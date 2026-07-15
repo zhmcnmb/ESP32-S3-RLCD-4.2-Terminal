@@ -3,6 +3,7 @@
 #include <inttypes.h>
 
 #include "asr_client.h"
+#include "audio_pipeline.h"
 #include "battery.h"
 #include "board_rlcd42.h"
 #include "claude_quota_client.h"
@@ -93,6 +94,7 @@ esp_err_t app_runtime_start(const app_runtime_config_t *cfg)
     log_if_failed(storage_sd_init(), "SD卡挂载");
     log_if_failed(time_service_init(cfg->timezone), "时间服务初始化");
     log_if_failed(env_logger_init(), "环境记录任务启动");
+    log_if_failed(audio_pipeline_init(), "音频链路初始化(P5.1)");
 
     ESP_ERROR_CHECK(input_manager_init());
     ESP_ERROR_CHECK(ui_manager_init());
