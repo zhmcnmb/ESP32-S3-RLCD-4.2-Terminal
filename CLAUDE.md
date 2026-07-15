@@ -47,13 +47,16 @@ P5起新增功能继续遵守这条依赖方向，不要为语音/agent开临时
 | `env_logger` | 后台任务60s采样SHTC3，环形缓冲(1小时窗口)+CSV落盘(经`storage_sd`)，每次采样后把历史整体推给`sys_state` |
 | `claude_quota_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/quota/compact`+cJSON解析，60s周期，结果推给`sys_state`(登记于coding-standards第7节) |
 | `weather_client` | 设备直连QWeather `/v7/weather/now`（HTTPS+cJSON解析），15分钟周期，结果推给`sys_state`。经`cloud_transport`组件走TLS+gzip解压，原因见下方"P3 天气架构"一节 |
+| `cloud_transport` | HTTPS GET(gzip自动解压)+流式POST(SSE/PCM响应逐块回调+取消)公共底座；weather_client/llm_provider/asr_client/tts_client共用 |
+| `llm_provider` | SiliconFlow/DeepSeek统一chat接口，SSE解析+tool_calls增量归一化+429/503/504重试一次；provider由`llm_provider_init()`运行时选择 |
+| `asr_client` | SiliconFlow语音转写，multipart/form-data上传SD卡WAV文件 |
+| `tts_client` | SiliconFlow语音合成，PCM流式回调(跨网络分片字节对齐拼接) |
 
 **待实现**
 
 | Component | 职责 | Phase |
 |---|---|---|
-| `cloud_transport` | TLS、HTTP 流、SSE、取消、重试；云 client 共用 | P5.0 |
-| `audio_pipeline` / `wakeword` / `voice_assistant` | ES8311/ES7210音频、ESP-SR唤醒、一轮语音编排与取消 | P5 |
+| `audio_pipeline` / `wakeword` / `voice_assistant` | ES8311/ES7210音频、ESP-SR唤醒、一轮语音编排与取消 | P5.1 |
 | `agent_runtime` / `agent_session` / `agent_tool_registry` | Pi 风格消息/工具循环、SD 会话、工具权限与输出预算 | P6.0 |
 | `memory_engine` / `scheduler` | 板载长期记忆与持久任务；数据、检索、维护全部在 SD/设备端 | P6.2/P6.3 |
 
@@ -118,6 +121,60 @@ P5起新增功能继续遵守这条依赖方向，不要为语音/agent开临时
 
 实测：真机确认`esp-x509-crt-bundle: Certificate validated`（TLS证书链校验通过），bridge日志确认重启后再无`/api/weather`请求。QWeather API Key现已进入`secrets.h`（`QWEATHER_API_KEY`/`QWEATHER_API_HOST`/`QWEATHER_LOCATION`），`bridge/`只保留P4 Claude用量代理（数据源`omp usage`命令本来就只能在Mac本地跑，没有直连替代方案）。`bridge/config.local.json`已删除（原来唯一内容就是QWeather配置）。
 
+## P5.0 完成记录(云 API 与资源验证)
+
+范围：扩展`cloud_transport`支持流式POST+取消；新增`llm_provider`(SiliconFlow/DeepSeek统一
+接口，SSE解析+tool_calls增量归一化+429/503/504重试一次)、`asr_client`(multipart WAV上传)、
+`tts_client`(PCM流式回调，跨网络分片字节对齐拼接)。暂不接麦克风，用固定文本+内置测试WAV验证。
+
+**验收标准核对**(对照`docs/voice-agent-design.md` P5.0节)：
+- ✅ 16k mono WAV能被ASR接受：真机上传内置测试WAV(`say`生成+`afconvert`转16kHz/mono/16-bit，
+  canonical WAV无多余chunk)，SiliconFlow返回识别文本与原始语音内容一致
+- ✅ SiliconFlow LLM普通SSE回答可解析；`llm_provider_init()`一行切provider kind即可切
+  SiliconFlow/DeepSeek，不改业务代码——但**DeepSeek因API Key未提供，只做了编译验证，
+  未做真实API调用**，待补Key后验证
+- ✅ 用`get_device_status`只读工具完成两次LLM请求闭环：第1次模型发起工具调用(SiliconFlow)，
+  本地执行(测试用固定假数据)，工具结果拼回历史发第2次请求，模型正确引用假数据生成自然语言
+  回答("当前设备电量为75%。")——确认tool_calls增量格式(index/id/function.name/arguments
+  跨chunk累积)已正确归一化
+- ✅ TTS PCM声道/位宽/端序/chunked正确：接收样本数×2字节与预期播放时长吻合(2.8~2.9秒对应
+  日常应答长度)；核心正确性点(网络分片不保证2字节对齐，`tts_client`内部1字节残留缓冲跨chunk
+  拼接)在真实网络条件下验证无误
+- ✅ 断网(不可达IP)、401、429、503、504、超时、取消(3秒后置位cancel_flag)均正确释放
+  资源：用本地Python mock server(`http.server`标准库，明文HTTP，`cloud_transport`对
+  `http://`会跳过TLS，不依赖真实API限流时机做可重复测试)逐一验证，堆/PSRAM在多轮ASR/LLM/
+  TTS/错误路径测试后与启动完成时基本持平(无显著下降，`历史最低`水位是测试期间大缓冲区的
+  瞬时占用,不是泄漏)
+- ✅ TLS开启后固件体积可接受：见下方数据；ESP-SR尚未接入(P5.1工作)，其体积影响留给P5.1实测
+
+**固件体积**(R0后基线 vs P5.0后)：
+
+| 指标 | R0后 | P5.0后 | 差值 |
+|---|---|---|---|
+| 固件总镜像 | 1,116,179 字节 | 1,189,147 字节 | +72,968字节(+6.5%) |
+| DIRAM占用率 | 37.96% | 38.06% | +0.1pp |
+| 启动完成时堆剩余 | 约8.56MB | 约8.55MB | 基本持平 |
+| 启动完成时PSRAM剩余 | 约8.38MB | 约8.38MB | 基本持平 |
+
+**踩过的坑**：
+1. **FATFS `rename()`不支持覆盖**：ESP-IDF的`esp_vfs_fat`基于ChaN FatFs，`f_rename()`严格
+   要求目标文件不存在，不同于POSIX `rename()`的"覆盖"语义——`storage_sd_atomic_replace()`
+   deepen于R0，但从未被真正调用过，这个bug潜伏到P5.0第一次真实调用才暴露：目标文件已存在时
+   `rename()`返回`EEXIST`，函数返回`ESP_FAIL`。修复：`rename()`前先`remove()`旧文件(忽略
+   `ENOENT`)。牺牲了"unlink和rename之间掉电会短暂缺文件"的极窄窗口，但保住了函数真正要防
+   的问题(写到一半掉电导致内容损坏/截断)。
+2. **DMA不能直接从flash映射(XIP)地址取数**：`EMBED_FILES`嵌入固件的测试WAV数据指针在flash，
+   直接传给`storage_sd_atomic_replace()`——SDMMC写入path经DMA，`fwrite()`"成功"返回
+   (`written==len`，无错误)，但SD卡上落盘内容全是0，不报错、极难排查。真机上靠对比
+   embedded源字节(`52 49 46 46`="RIFF"，正确)和SD读回字节(`00 00 00 00`，全零)才定位到。
+   **规则**：任何flash常量(`static const`大数组、`EMBED_FILES`资源)要写SD卡，必须先
+   `memcpy`到堆/PSRAM缓冲区，`storage_sd.h`已补充文档说明。
+
+DeepSeek API Key当前为空(用户尚未申请/填入)，`llm_provider`/`deepseek_client.c`已按与
+SiliconFlow相同的OpenAI兼容协议完整实现并编译验证，`app_main.c`里`use_deepseek_llm`改
+`true`即可切换——但encode真实DeepSeek API的行为(尤其SSE tool_calls分片格式是否与
+SiliconFlow一致)尚未真机验证，待Key补齐后需要补一次真实调用验证。
+
 ## 已知风险 / 待确认事项
 
 - ~~SD卡引脚~~ 已确认：SDMMC外设1-bit模式，CLK=38/CMD=21/D0=39，与显示SPI无冲突（详见`docs/hardware-pinmap.md`）
@@ -141,7 +198,7 @@ P5起新增功能继续遵守这条依赖方向，不要为语音/agent开临时
 | P3 | 联网时钟天气：WiFi+NTP+mDNS+和风天气 ✅已完成并真机验证 | 显示正确本地时间与指定城市天气(bridge日志确认ESP32多次成功轮询`/api/weather`拿到200，`page_weather`展示"阴/东风0级/29℃/89%"等真实数据) |
 | P4 | Claude额度显示：Mac桥接服务+ESP32轮询+额度页面 ✅已完成并真机验证 | 屏幕数字与手动核对吻合(bridge日志确认ESP32多次成功轮询`/api/quota/compact`拿到200) |
 | R0 | 架构治理：`app_runtime`、`sys_state`、`input_manager`、深化 `storage_sd`、UI V2四页迁移 ✅已完成并真机验证 | 见上方"R0 完成记录"；固件+3,400字节(+0.3%)，quota/weather真机验证含bridge主动断开90s恢复场景 |
-| P5.0 | 云 API 与资源验证：SiliconFlow ASR/TTS、SiliconFlow/DeepSeek LLM、SSE/Tools | 两个 LLM Adapter 可配置切换；失败、取消、限流可释放资源 |
+| P5.0 | 云 API 与资源验证：SiliconFlow ASR/TTS、SiliconFlow/DeepSeek LLM、SSE/Tools ✅已完成并真机验证(DeepSeek因API Key暂缺仅完成编译验证) | 见下方"P5.0 完成记录" |
 | P5.1-P5.2 | 语音链路：音频、ESP-SR、Wake/VAD/ASR/LLM/TTS | 唤醒可靠，单轮问答闭环完整 |
 | P6.0-P6.1 | 板载 agent：Pi 风格 loop、本地工具、SD 会话、Web/Skills | 工具权限和上下文预算可控；外部网页不能越权 |
 | P6.2-P6.3 | 个人智能体：板载记忆、提醒/cron，按需接 HA 或 Telegram | 记忆可重建、可删除；掉电任务不重复执行 |

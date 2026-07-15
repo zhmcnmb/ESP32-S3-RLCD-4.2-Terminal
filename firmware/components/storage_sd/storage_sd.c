@@ -1,5 +1,6 @@
 #include "storage_sd.h"
 
+#include <errno.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -177,16 +178,32 @@ esp_err_t storage_sd_atomic_replace(const char *rel_path, const void *data, size
     esp_err_t ret = ESP_OK;
     FILE *f = fopen(tmp_path, "w");
     if (!f) {
+        ESP_LOGW(TAG, "fopen(%s)失败 errno=%d(%s)", tmp_path, errno, strerror(errno));
         ret = ESP_FAIL;
     } else {
         size_t written = fwrite(data, 1, len, f);
+        int fwrite_errno = errno;
         int close_err = fclose(f);
         if (written != len || close_err != 0) {
+            ESP_LOGW(TAG, "fwrite/fclose失败 written=%u/%u close_err=%d errno=%d(%s)",
+                     (unsigned)written, (unsigned)len, close_err, fwrite_errno, strerror(fwrite_errno));
             ret = ESP_FAIL;
             remove(tmp_path); /* 写失败别留半截临时文件 */
-        } else if (rename(tmp_path, path) != 0) {
-            ret = ESP_FAIL;
-            remove(tmp_path);
+        } else {
+            /* FATFS的f_rename严格要求目标不存在(不同于POSIX rename()的"覆盖"语义)，
+             * 目标已存在会返回FR_EXIST->EEXIST。这里先unlink旧文件再rename——
+             * 牺牲掉"unlink和rename之间掉电会短暂缺文件"的极窄窗口，换来实际能用的
+             * 覆盖写；仍然避免了本函数真正要防的问题(写到一半掉电导致内容损坏/截断，
+             * 因为写入始终先落到.tmp，只有完整写成功才会替换旧文件) */
+            errno = 0;
+            if (remove(path) != 0 && errno != ENOENT) {
+                ESP_LOGW(TAG, "remove旧文件(%s)失败 errno=%d(%s)", path, errno, strerror(errno));
+            }
+            if (rename(tmp_path, path) != 0) {
+                ESP_LOGW(TAG, "rename(%s -> %s)失败 errno=%d(%s)", tmp_path, path, errno, strerror(errno));
+                ret = ESP_FAIL;
+                remove(tmp_path);
+            }
         }
     }
     xSemaphoreGive(s_lock);

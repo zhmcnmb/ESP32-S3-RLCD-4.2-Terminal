@@ -1,6 +1,7 @@
 #include "cloud_transport.h"
 
 #include <stdbool.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
@@ -166,4 +167,141 @@ esp_err_t cloud_transport_get(const char *url, const char *header_name, const ch
     out_buf[decompressed] = '\0';
     *out_len = decompressed;
     return ESP_OK;
+}
+
+#define STREAM_TIMEOUT_MS 3000 /* 每次read()的最长阻塞时间；也是cancel_flag的检测粒度 */
+#define STREAM_READ_CHUNK 1024
+
+/* 建连+发请求头+写请求体，成功后*out_client持有已打开的连接(调用方负责后续
+ * fetch_headers/read/close)。失败时内部已清理，*out_client不会被设置。 */
+static esp_err_t stream_open_request(const char *url, const char *auth_header_value,
+                                      const char *content_type, const void *body, size_t body_len,
+                                      esp_http_client_handle_t *out_client)
+{
+    char auth_buf[192];
+    if (auth_header_value) {
+        int n = snprintf(auth_buf, sizeof(auth_buf), "Bearer %s", auth_header_value);
+        if (n < 0 || (size_t)n >= sizeof(auth_buf)) {
+            ESP_LOGW(TAG, "Authorization头拼接溢出");
+            return ESP_ERR_INVALID_ARG;
+        }
+    }
+
+    esp_http_client_config_t cfg = {
+        .url = url,
+        .method = HTTP_METHOD_POST,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = STREAM_TIMEOUT_MS,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        return ESP_ERR_NO_MEM;
+    }
+    if (auth_header_value) {
+        esp_http_client_set_header(client, "Authorization", auth_buf);
+    }
+    if (content_type) {
+        esp_http_client_set_header(client, "Content-Type", content_type);
+    }
+
+    esp_err_t err = esp_http_client_open(client, (int)body_len);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "打开连接失败: %s", esp_err_to_name(err));
+        esp_http_client_cleanup(client);
+        return err;
+    }
+    if (body && body_len > 0) {
+        int written = esp_http_client_write(client, (const char *)body, (int)body_len);
+        if (written < 0 || (size_t)written != body_len) {
+            ESP_LOGW(TAG, "写请求体失败: %d/%u", written, (unsigned)body_len);
+            esp_http_client_close(client);
+            esp_http_client_cleanup(client);
+            return ESP_ERR_HTTP_WRITE_DATA;
+        }
+    }
+    *out_client = client;
+    return ESP_OK;
+}
+
+/* 逐块读响应体交给on_chunk，直到读完或cancel_flag被置位；不关闭client(调用方处理)。 */
+static esp_err_t stream_read_loop(esp_http_client_handle_t client, cloud_transport_chunk_cb_t on_chunk,
+                                   void *user_ctx, const volatile bool *cancel_flag)
+{
+    char *buf = malloc(STREAM_READ_CHUNK);
+    if (!buf) {
+        return ESP_ERR_NO_MEM;
+    }
+
+    esp_err_t result = ESP_OK;
+    while (true) {
+        if (cancel_flag && *cancel_flag) {
+            result = ESP_ERR_NOT_FINISHED;
+            break;
+        }
+        int n = esp_http_client_read(client, buf, STREAM_READ_CHUNK);
+        if (n < 0) {
+            if (n == -ESP_ERR_HTTP_EAGAIN) {
+                continue; /* 单次read超时未到数据，重新检查cancel_flag后再读 */
+            }
+            ESP_LOGW(TAG, "读响应体失败: %d", n);
+            result = ESP_FAIL;
+            break;
+        }
+        if (n > 0) {
+            esp_err_t cb_err = on_chunk(buf, (size_t)n, user_ctx);
+            if (cb_err != ESP_OK) {
+                result = ESP_ERR_INVALID_RESPONSE;
+                break;
+            }
+        }
+        if (esp_http_client_is_complete_data_received(client)) {
+            break;
+        }
+    }
+
+    free(buf);
+    return result;
+}
+
+esp_err_t cloud_transport_post_stream(const char *url, const char *auth_header_value,
+                                       const char *content_type, const void *body, size_t body_len,
+                                       cloud_transport_chunk_cb_t on_chunk, void *user_ctx,
+                                       const volatile bool *cancel_flag, int *out_status)
+{
+    if (!url || !on_chunk) {
+        return ESP_ERR_INVALID_ARG;
+    }
+    if (out_status) {
+        *out_status = 0;
+    }
+
+    esp_http_client_handle_t client = NULL;
+    esp_err_t err = stream_open_request(url, auth_header_value, content_type, body, body_len, &client);
+    if (err != ESP_OK) {
+        return err;
+    }
+
+    int64_t clen = esp_http_client_fetch_headers(client);
+    if (clen < 0) {
+        ESP_LOGW(TAG, "读响应头失败: %lld", (long long)clen);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_FAIL;
+    }
+
+    int status = esp_http_client_get_status_code(client);
+    if (out_status) {
+        *out_status = status;
+    }
+    if (status < 200 || status >= 300) {
+        ESP_LOGW(TAG, "HTTP状态非2xx: %d", status);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        return ESP_ERR_HTTP_CONNECT;
+    }
+
+    esp_err_t result = stream_read_loop(client, on_chunk, user_ctx, cancel_flag);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return result;
 }
