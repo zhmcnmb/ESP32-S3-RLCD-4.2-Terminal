@@ -1,3 +1,3 @@
 idf_component_register(SRCS "weather_client.c"
                        INCLUDE_DIRS "include"
-                       REQUIRES esp_http_client mdns cjson sys_state)
+                       REQUIRES cloud_transport cjson sys_state)

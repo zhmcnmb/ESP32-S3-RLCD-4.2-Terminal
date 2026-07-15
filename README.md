@@ -37,5 +37,5 @@ idf.py build flash monitor
 .
 ├── docs/           # 硬件引脚表、vendor代码来源记录、开发规范
 ├── firmware/       # ESP-IDF固件工程
-└── bridge/         # Mac本地桥接服务：Claude用量+天气代理，已实现(P3+P4)
+└── bridge/         # Mac本地桥接服务：Claude用量代理，已实现(P4)。天气(P3)已改为设备直连，不再经bridge
 ```

@@ -184,6 +184,7 @@ bool claude_quota_client_get(claude_quota_t *out)
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
     *out = s_quota;
+    bool has_data = s_quota.fetched_at != 0;
     xSemaphoreGive(s_lock);
-    return s_quota.fetched_at != 0;
+    return has_data;
 }

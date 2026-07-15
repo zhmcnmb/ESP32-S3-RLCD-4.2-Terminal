@@ -13,9 +13,9 @@
  * 天气页(天气海报)：温度和天气图形构成主要识别。只读取 sys_state 快照，
  * 不直接轮询天气服务(规范第6节)。
  *
- * 城市固定为常州·武进(对应 secrets.h 里桥接服务侧的 QWeather LocationID)，
- * 纯展示用途；weather_client 通过 bridge/server.py 代理获取天气数据，
- * 详见 docs/CLAUDE.md "P3 天气代理"一节。
+ * 城市固定为常州·武进(对应 secrets.h 里 QWEATHER_LOCATION)，纯展示用途；
+ * weather_client 设备直连QWeather(经cloud_transport走TLS+gzip解压)，
+ * 不再经bridge代理，详见 docs/CLAUDE.md "P3 天气架构"一节。
  *
  * 布局(400×300，UI V2共享页头/页脚见 ui_v2.h):
  *   页头        y=0..34    城市名 + SD/WiFi/电池图标

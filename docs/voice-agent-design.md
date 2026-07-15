@@ -315,7 +315,7 @@ typedef struct {
 | `get_environment` | 当前温湿度和历史聚合 | 不返回原始长序列 |
 | `get_weather` | 现有 weather cache | 缓存无效时返回不可用 |
 
-`get_weather` 不重复请求天气 API；当前天气缓存仍由现有 Mac `bridge` 更新。
+`get_weather` 不重复请求天气 API；天气缓存由 `weather_client` 更新(2026-07-15起设备直连QWeather，不再经Mac `bridge`)。
 
 ### 7.2 个人智能体工具
 
@@ -603,12 +603,12 @@ P0-P4 已真机验证，长期规划不推翻现有功能，但在叠加语音�
 
 | 优先级 | 现状与证据 | 优化方案 |
 |---|---|---|
-| P1 | `page_home.c` 直接读 SHTC3/电池；`ui_pages` 依赖几乎所有业务模块 | 页面统一读取 `sys_state` snapshot |
+| ~~P1~~ | ~~`page_home.c` 直接读 SHTC3/电池；`ui_pages` 依赖几乎所有业务模块~~ | 已被R0解决：四页(home/env_monitor/quota/weather)全部改读`sys_state` snapshot，`page_diag.c`保留为反面参照(未注册进`ui_manager`) |
 | P1 | `display_st7305.c` 445 行，超过 400 行红线 | 保持一个公共 interface，在模块内部拆 panel/draw/text 文件 |
-| P1 | weather/quota 重复 mDNS、HTTP 缓冲和解析骨架 | 抽共享 `bridge_client` 或迁移到 `cloud_transport` |
-| P1 | `storage_sd` 只有 append line，没有互斥、目录、流读、原子替换 | 深化模块 interface，支撑 WAV、Skill、会话和 pending queue |
-| P1 | weather 页面注释仍写“设备直连官方 HTTPS”，城市配置说明也已过时 | 同步修正文档和代码注释，避免后续误判 |
-| P1 | quota/weather getter 解锁后再次读共享字段 | 在锁内完成返回值判断 |
+| ~~P1~~ | ~~weather/quota 重复 mDNS、HTTP 缓冲和解析骨架~~ | 已部分解决：`weather_client`已改设备直连QWeather(经`cloud_transport`)，不再和`claude_quota_client`共享mDNS+HTTP骨架；`claude_quota_client`仍自己实现，目前只有它一个消费方，暂不评估单独抽象 |
+| ~~P1~~ | ~~`storage_sd` 只有 append line，没有互斥、目录、流读、原子替换~~ | 已被R0解决：Interface深化为append/read_chunk/atomic_replace/checkpoint，内部互斥锁串行化+路径校验 |
+| ~~P1~~ | ~~weather 页面注释仍写"设备直连官方 HTTPS"，城市配置说明也已过时~~ | 已解决(且已经名副其实)：`weather_client`现在确实设备直连HTTPS，注释已同步 |
+| ~~P1~~ | ~~quota/weather getter 解锁后再次读共享字段~~ | 已解决：`claude_quota_client_get()`/`weather_client_get()`都改成锁内计算`has_data`再解锁返回 |
 
 ### 11.3 后续产品化优化
 

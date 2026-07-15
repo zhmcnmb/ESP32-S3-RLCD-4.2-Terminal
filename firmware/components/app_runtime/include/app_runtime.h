@@ -24,8 +24,11 @@ typedef struct {
     const char *wifi_ssid;
     const char *wifi_password;
     const char *timezone;         /* POSIX格式，如 "CST-8" */
-    const char *bridge_mdns_host; /* 不含 ".local" 后缀 */
+    const char *bridge_mdns_host; /* 不含 ".local" 后缀，P4 Claude用量走这里 */
     uint16_t bridge_port;
+    const char *qweather_api_key;  /* 天气(P3)设备直连QWeather，不经bridge */
+    const char *qweather_api_host; /* 不含协议前缀，如 "xxxxx.re.qweatherapi.com" */
+    const char *qweather_location; /* LocationID，如 "101010100" */
 } app_runtime_config_t;
 
 esp_err_t app_runtime_start(const app_runtime_config_t *cfg);
