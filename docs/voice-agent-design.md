@@ -635,15 +635,19 @@ P0-P4 已真机验证，长期规划不推翻现有功能，但在叠加语音�
 
 退出条件：P0-P4 行为不退化；`app_main.c` 回到充足余量；页面不再直接读传感器；两个按键手势稳定。
 
-### P5.0 云 API 与资源验证
+### P5.0 云 API 与资源验证 ✅已完成并真机验证(2026-07-15，详见CLAUDE.md"P5.0 完成记录")
 
 暂不接麦克风，用固定文本和测试 WAV 验证：
 
-1. 16k mono WAV 能被 ASR 接受。
+1. 16k mono WAV 能被 ASR 接受。✅ SiliconFlow正确识别内置测试WAV语音内容
 2. 选定的首发 LLM provider 普通 SSE 回答可解析，并能只改配置切换 SiliconFlow/DeepSeek。
+   ✅ SiliconFlow已验证；⚠️ DeepSeek API Key暂缺，`deepseek_client`按同协议实现且编译通过，
+   未做真实调用验证，切换只需改`app_main.c`一行`use_deepseek_llm`
 3. 两个 provider 分别用一个只读工具完成两次 LLM 请求，确认工具增量格式已被归一化。
-4. TTS raw PCM 的声道、位宽、端序和 chunked 播放正确。
-5. TLS 开启后的固件体积、内部堆和 PSRAM 余量可接受。
+   ✅ SiliconFlow完整验证(工具调用→执行→结果回填→最终回答闭环)；DeepSeek同上未验证
+4. TTS raw PCM 的声道、位宽、端序和 chunked 播放正确。✅ 已验证跨网络分片字节对齐拼接
+5. TLS 开启后的固件体积、内部堆和 PSRAM 余量可接受。✅ +6.5%固件体积，堆/PSRAM无显著下降；
+   ESP-SR尚未接入，其体积影响留给P5.1实测
 
 验收：ASR、LLM、TTS 三类 API 分别跑通；SiliconFlow/DeepSeek LLM 可配置切换；断网、401、429、503、超时和取消后均能释放资源。
 

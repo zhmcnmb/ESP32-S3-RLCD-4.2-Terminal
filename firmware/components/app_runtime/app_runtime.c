@@ -2,6 +2,7 @@
 
 #include <inttypes.h>
 
+#include "asr_client.h"
 #include "battery.h"
 #include "board_rlcd42.h"
 #include "claude_quota_client.h"
@@ -12,12 +13,14 @@
 #include "esp_log.h"
 #include "esp_system.h"
 #include "input_manager.h"
+#include "llm_provider.h"
 #include "net_manager.h"
 #include "rtc_pcf85063.h"
 #include "sensor_shtc3.h"
 #include "storage_sd.h"
 #include "sys_state.h"
 #include "time_service.h"
+#include "tts_client.h"
 #include "ui_manager.h"
 #include "ui_pages.h"
 #include "weather_client.h"
@@ -60,6 +63,18 @@ static void start_network(const app_runtime_config_t *cfg)
     log_if_failed(claude_quota_client_init(cfg->bridge_mdns_host, cfg->bridge_port), "Claude用量客户端启动");
     log_if_failed(weather_client_init(cfg->qweather_api_key, cfg->qweather_api_host, cfg->qweather_location),
                   "天气客户端启动");
+
+    /* P5.0 云API客户端：ASR/TTS固定走SiliconFlow；LLM按cfg->use_deepseek_llm配置切换，
+     * 只改配置不改代码(docs/voice-agent-design.md 5.1节要求) */
+    log_if_failed(asr_client_init(cfg->siliconflow_api_key), "ASR客户端启动");
+    log_if_failed(tts_client_init(cfg->siliconflow_api_key), "TTS客户端启动");
+    if (cfg->use_deepseek_llm) {
+        log_if_failed(llm_provider_init(LLM_PROVIDER_DEEPSEEK, cfg->deepseek_api_key, "deepseek-chat"),
+                      "LLM客户端启动(DeepSeek)");
+    } else {
+        log_if_failed(llm_provider_init(LLM_PROVIDER_SILICONFLOW, cfg->siliconflow_api_key, "Qwen/Qwen3-8B"),
+                      "LLM客户端启动(SiliconFlow)");
+    }
 }
 
 esp_err_t app_runtime_start(const app_runtime_config_t *cfg)

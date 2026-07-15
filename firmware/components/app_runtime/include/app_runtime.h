@@ -1,5 +1,6 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "esp_err.h"
@@ -29,6 +30,9 @@ typedef struct {
     const char *qweather_api_key;  /* 天气(P3)设备直连QWeather，不经bridge */
     const char *qweather_api_host; /* 不含协议前缀，如 "xxxxx.re.qweatherapi.com" */
     const char *qweather_location; /* LocationID，如 "101010100" */
+    const char *siliconflow_api_key; /* P5.0 ASR/TTS/LLM，SiliconFlow平台Key */
+    const char *deepseek_api_key;    /* P5.0 LLM可选切换，留空则只用SiliconFlow */
+    bool use_deepseek_llm;            /* true=LLM走DeepSeek，false(默认)=走SiliconFlow */
 } app_runtime_config_t;
 
 esp_err_t app_runtime_start(const app_runtime_config_t *cfg);

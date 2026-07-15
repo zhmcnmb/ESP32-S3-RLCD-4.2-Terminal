@@ -40,7 +40,9 @@ bool storage_sd_is_mounted(void);
 /* 容量信息，未挂载时返回错误 */
 esp_err_t storage_sd_get_info(storage_sd_info_t *out);
 
-/* 追加一行文本到文件(自动加换行)。路径相对挂载点，如 "env.csv" */
+/* 追加一行文本到文件(自动加换行)。路径相对挂载点，如 "env.csv"。
+ * line必须指向RAM(栈/堆/.data)，不能是flash直接映射地址——见下方atomic_replace
+ * 的DMA说明，同一限制对append_line同样适用 */
 esp_err_t storage_sd_append_line(const char *rel_path, const char *line);
 
 /* 从offset开始流式读取最多buf_len字节到buf。返回实际读取字节数，0表示
@@ -49,7 +51,13 @@ esp_err_t storage_sd_append_line(const char *rel_path, const char *line);
 int storage_sd_read_chunk(const char *rel_path, uint32_t offset, void *buf, size_t buf_len);
 
 /* 原子替换文件全部内容：先写临时文件，成功后rename覆盖目标，避免写到一半
- * 掉电导致文件损坏或截断。用于配置/校验和/manifest等"整体替换"场景 */
+ * 掉电导致文件损坏或截断。用于配置/校验和/manifest等"整体替换"场景。
+ *
+ * data必须指向RAM(栈/堆/.data/.bss)，不能是flash直接映射地址(如
+ * `EMBED_FILES`嵌入的只读资源、`static const`大数组)——SDMMC写入path经DMA，
+ * DMA不能直接从flash cache映射地址取数：fwrite()会"成功"返回，但落盘内容
+ * 全是0，不报错、不好排查(P5.0真机验证踩过)。调用方需要写flash常量时，
+ * 先memcpy到堆/PSRAM缓冲区再传进来 */
 esp_err_t storage_sd_atomic_replace(const char *rel_path, const void *data, size_t len);
 
 /* 确保此前的写入已落盘。当前实现下append/atomic_replace每次调用都完整

@@ -37,6 +37,9 @@ void app_main(void)
         .qweather_api_key = QWEATHER_API_KEY,
         .qweather_api_host = QWEATHER_API_HOST,
         .qweather_location = QWEATHER_LOCATION,
+        .siliconflow_api_key = SILICONFLOW_API_KEY,
+        .deepseek_api_key = DEEPSEEK_API_KEY,
+        .use_deepseek_llm = false, /* P5.0首发走SiliconFlow；切DeepSeek只改这一行 */
     };
     ESP_ERROR_CHECK(app_runtime_start(&cfg));
 }

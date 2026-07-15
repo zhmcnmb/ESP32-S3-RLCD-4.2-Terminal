@@ -47,10 +47,13 @@ app_runtime       启动顺序、注册、降级策略
 | `firmware/components/env_logger/` | 后台任务60s采样温湿度，环形缓冲(1小时窗口)+CSV落盘 |
 | `firmware/components/claude_quota_client/` | mDNS解析桥接服务+HTTP轮询`/api/quota/compact`，60s周期 |
 | `firmware/components/weather_client/` | 设备直连QWeather `/v7/weather/now`(HTTPS+cJSON解析)，经`cloud_transport`走TLS+gzip解压，15分钟周期 |
-| `firmware/components/app_runtime/` *(P5前置)* | 启动顺序、页面/功能注册、可选能力降级 |
-| `firmware/components/sys_state/` *(P5前置)* | 线程安全状态快照、事件、命令；UI/工具的唯一共享状态入口 |
-| `firmware/components/input_manager/` *(P5前置)* | KEY/BOOT 消抖、长短按与语义输入事件 |
-| `firmware/components/cloud_transport/` | 阻塞式HTTPS `get`(TLS证书校验+gzip自动解压)，`weather_client`已在用；stream/SSE/取消留给P5.0按需扩展 |
+| `firmware/components/app_runtime/` | 启动顺序、页面/功能注册、可选能力降级 |
+| `firmware/components/sys_state/` | 线程安全状态快照、事件、命令；UI/工具的唯一共享状态入口 |
+| `firmware/components/input_manager/` | KEY/BOOT 消抖、长短按与语义输入事件 |
+| `firmware/components/cloud_transport/` | HTTPS `get`(TLS+gzip自动解压)+流式`post_stream`(SSE/PCM逐块回调+取消)，weather_client/llm_provider/asr_client/tts_client共用 |
+| `firmware/components/llm_provider/` | SiliconFlow/DeepSeek统一chat接口，SSE解析+tool_calls归一化+重试 |
+| `firmware/components/asr_client/` | SiliconFlow语音转写(multipart上传SD卡WAV) |
+| `firmware/components/tts_client/` | SiliconFlow语音合成(PCM流式回调) |
 | `firmware/components/memory_engine/` *(P6)* | SD 上的会话、画像、长期记忆日志、索引、召回与维护 |
 | `tools/` | `gen_font.py`(中文字库生成器) + `charset.txt`(手工补充字符集，仅运行时才出现的文案用) |
 | `docs/` | `coding-standards.md`(强制开发规范)、`hardware-pinmap.md`(引脚权威表)、`vendor-provenance.md`(摘取代码来源登记) |

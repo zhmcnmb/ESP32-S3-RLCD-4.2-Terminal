@@ -42,7 +42,7 @@ app_runtime                 启动顺序、功能注册、降级策略
 | `sys_state` | read snapshot、apply event、post command | 锁、事件循环、版本与订阅 |
 | `input_manager` | 发布语义输入事件 | GPIO、消抖、长短按、上下文映射 |
 | `storage_sd` | append、stream read、atomic replace、checkpoint | FATFS、路径约束、串行写、掉电恢复 |
-| `cloud_transport` | 目前只有阻塞式 `get`（TLS+可选gzip自动解压，`weather_client`已在用）；stream callback、cancel 待P5.0接入SiliconFlow/DeepSeek时按实际需要扩展，不预先实现 | TLS、证书、gzip容器解析、超时 |
+| `cloud_transport` | 阻塞式 `get`(TLS+可选gzip自动解压)；阻塞式流式 `post_stream`(SSE/PCM响应逐块回调+cancel_flag取消，P5.0已接入SiliconFlow/DeepSeek验证) | TLS、证书、gzip容器解析、超时、取消 |
 | `memory_engine` | recall、record、forget、maintain | 日志、索引、TTL、墓碑、压缩、重建 |
 
 - 不为“以后可能”建立 Interface。只有确实存在两个 Adapter 时才建立外部 seam；例如 SiliconFlow 与 DeepSeek 使 `llm_provider` 成为真实 seam。
