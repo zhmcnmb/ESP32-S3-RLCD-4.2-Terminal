@@ -2,30 +2,55 @@
 
 本文件是强制约定，不是建议。目的只有一个：**防止代码随功能增长而腐化**。每次新增功能前先读本文件，提交前对照末尾检查清单。
 
-## 1. 分层架构：依赖只能向下
+## 1. 目标架构：少量深 Module，依赖方向清晰
 
-```
-main/app_main.c            启动编排 + 页面注册。不写任何业务逻辑
+P0-P4 的页面、轮询服务和启动代码已经可用，但不足以直接承载语音、agent、SD 长期记忆和流式网络。P5 起新增功能按以下目标架构落位；R0 逐步迁移旧页面，不要求为整理文档而重写已验证功能。
+
+```text
+main/app_main.c
       ↓
-ui_pages/                  各功能页面，实现统一 page 接口
-      ↓
-ui_manager                 渲染框架、页面导航、状态栏
-      ↓
-服务层                      env_logger / weather_client / claude_quota_client
-                           rtc_pcf85063 / storage_sd / net_manager
-      ↓
-驱动层                      display_st7305 / audio_pipeline / wakeword
-      ↓
-board_rlcd42               引脚定义 + 总线初始化（最底层，不依赖任何组件）
+app_runtime                 启动顺序、功能注册、降级策略
+      ├── input_manager      GPIO 消抖、手势 -> 语义输入事件
+      ├── sys_state          状态快照、事件、命令
+      ├── ui_manager/ui_pages  读取快照、渲染、提交命令
+      ├── voice_assistant    一轮语音编排与取消
+      │     └── agent_runtime  消息、工具循环、会话与记忆调用
+      └── capability/platform Modules
+            cloud_transport / storage_sd / scheduler / 网络、传感器、音频、显示
+                  ↓
+             board_rlcd42    引脚定义 + 总线初始化（最底层）
 ```
 
 **铁律：**
-- 只能依赖下层，**禁止向上依赖**（驱动层不准 `#include` 服务层）
-- **禁止横向依赖**：页面之间不准互相 include，服务之间不准直接调用
-- 跨层/跨模块通信一律走 `sys_state`（ESP-IDF event loop + 共享状态），不准用全局变量互相读写
-- 违反依赖方向的需求，说明分层错了 —— 改分层，不要开后门
 
-## 2. 组件规范
+- `app_main.c` 只调用 `app_runtime` 的启动 Interface；初始化顺序、可选功能降级和注册逻辑归 `app_runtime`。
+- 页面只读取 `sys_state` 快照并提交命令；禁止读取传感器、电池、网络、SD 或发起 HTTP。页面之间禁止互相 include。
+- `input_manager` 是物理按键的唯一所有者；`ui_manager`、页面和语音模块只接收语义事件，不读取 GPIO，也不自行判定长短按。
+- 跨 Module 的异步数据流只能经 `sys_state` 事件/命令；不准用可写全局变量互相读写，也不准让服务 Module 直接调用另一个业务服务 Module。
+- `board_rlcd42`、显示、音频、网络、SD 等平台 Module 不得依赖 UI、语音、agent 或业务 Module。
+- 违反依赖方向说明 Module 归属错误：调整 Module 或把交互收敛到 `sys_state`，不得开临时 include 后门。
+
+**迁移约束：**当前 `ui_pages` 对传感器、电池、网络和 SD 的直接读取是 P0-P4 遗留实现。R0 迁移前允许维持既有行为；从本规则生效起，新增页面和新增页面数据不得扩大这种依赖，迁移时优先处理首页和状态栏。
+
+## 2. Module Interface、深度与 seam
+
+一个 Module 对外只暴露一个小 Interface，把并发、文件格式、重试、资源回收等复杂度留在 Implementation 内。调用方与测试都只跨这个 Interface；这样才能把变化集中在一个位置，获得维护 Locality。
+
+| Module | 对外 Interface 的职责 | 必须隐藏的复杂度 |
+|---|---|---|
+| `app_runtime` | 启动与功能注册 | 初始化顺序、注册、可选功能降级 |
+| `sys_state` | read snapshot、apply event、post command | 锁、事件循环、版本与订阅 |
+| `input_manager` | 发布语义输入事件 | GPIO、消抖、长短按、上下文映射 |
+| `storage_sd` | append、stream read、atomic replace、checkpoint | FATFS、路径约束、串行写、掉电恢复 |
+| `cloud_transport` | request、stream callback、cancel | TLS、证书、chunked、SSE、超时、限流 |
+| `memory_engine` | recall、record、forget、maintain | 日志、索引、TTL、墓碑、压缩、重建 |
+
+- 不为“以后可能”建立 Interface。只有确实存在两个 Adapter 时才建立外部 seam；例如 SiliconFlow 与 DeepSeek 使 `llm_provider` 成为真实 seam。
+- `memory_engine` 只有一个板载生产 Implementation，不建立远程记忆 provider；测试需要的替身属于其内部 seam，不扩大调用方 Interface。
+- `storage_sd`、`cloud_transport`、`memory_engine` 不得让调用方了解文件路径、HTTP 客户端、索引 generation 或重试细节。
+- Interface 就是测试面。测试断言可观察结果，不能依赖 Module 的私有状态、静态变量或目录内部布局。
+
+## 3. 组件规范
 
 每个 component 目录结构固定：
 
@@ -40,19 +65,20 @@ components/<name>/
 - **所有公开符号加组件前缀**：`board_*` / `st7305_*` / `env_*` / `ui_*`
 - 内部函数、内部变量一律 `static`，不进头文件
 - 头文件只暴露"别人需要怎么用"，不暴露"我是怎么实现的"
+- 新增 Module 前先写清其 Interface 的前置条件、错误模式、所有权和资源上限；说不清这些内容时，不创建该 Module
 
-## 3. 文件与函数体积红线
+## 4. 文件与函数体积红线
 
 | 对象 | 红线 | 超了怎么办 |
 |---|---|---|
 | 单个 `.c` 文件 | 400 行 | 按职责拆成多个组件或多个文件 |
 | 单个函数 | 60 行 | 抽出 static 辅助函数 |
-| `main/app_main.c` | **100 行** | 它只准做启动编排，业务逻辑全部下沉到组件 |
+| `main/app_main.c` | **100 行** | 它只准做芯片诊断和 `app_runtime` 启动，业务逻辑全部下沉到 Module |
 | 函数参数 | 5 个 | 改传结构体 |
 
 红线是硬性的。**碰到红线时不准"先这样以后再说"** —— 以后不会有以后。
 
-## 4. 错误处理
+## 5. 错误处理
 
 **驱动层和服务层禁止 `ESP_ERROR_CHECK`** —— 它触发 `abort()`，会让整机重启。库代码没有资格决定整机去死。
 
@@ -65,15 +91,15 @@ esp_err_t st7305_flush(void)
 }
 
 /* 只有 app_main 的启动关键路径可以用 ESP_ERROR_CHECK：
-   板子初始化失败时，继续运行没有意义 */
-ESP_ERROR_CHECK(board_init());
+   app_runtime 已区分不可恢复的板级失败和可降级能力 */
+ESP_ERROR_CHECK(app_runtime_start());
 ```
 
 - 可恢复的错误（网络超时、传感器读取失败、SD卡未插）→ 返回错误码 + `ESP_LOGW`，上层重试或降级显示
 - 不可恢复的初始化失败 → 只在 `app_main` 里 `ESP_ERROR_CHECK`
 - 一律不要吞掉错误码：函数返回 `esp_err_t` 就必须检查
 
-## 5. 页面接口契约（后续所有UI页面必须实现）
+## 6. 页面与输入 Interface
 
 定义在 `components/ui_manager/include/ui_page.h`。新增页面 = 实现这个结构体 + 注册，**不准改 ui_manager 的代码**（开闭原则）。
 
@@ -87,10 +113,12 @@ typedef struct {
 } ui_page_t;
 ```
 
-- 页面**只负责渲染和交互**，不准自己发HTTP请求/读传感器——数据从服务层拿
-- 页面之间不共享状态，共享的东西放 `sys_state`
+- 页面**只负责读取快照、渲染和提交命令**，不准自己发 HTTP 请求、读传感器、电池、网络或 SD
+- 页面之间不共享状态，共享数据和状态变化都放 `sys_state`
+- `ui_manager` 只负责页面生命周期、导航和渲染调度；不得再加入 GPIO 消抖、长按或语音取消规则
+- 新增语义输入由 `input_manager` 发布。KEY：短按 NEXT、长按 VOICE；BOOT：短按 ACTION、长按 BACK/CANCEL。PWR 是硬件电源开关，不得分配固件行为
 
-## 6. 资源约定
+## 7. 资源与并发约定
 
 **GPIO / 总线**
 - 所有引脚宏**只准**定义在 `board_rlcd42.h`，其他文件禁止出现裸 GPIO 号
@@ -104,39 +132,52 @@ typedef struct {
 
 **FreeRTOS 任务**
 - 任务的栈大小、优先级集中登记在下表，新增任务必须先在这里登记，避免优先级打架
+- 事件回调只更新状态、投递事件或启动定时器；禁止在 WiFi/IP/ESP event callback 中 `vTaskDelay`、网络访问、文件写入或等待锁
+- 周期后台任务使用 `vTaskDelayUntil` 或事件唤醒；语音录放、交互取消和 UI 刷新优先于低优先级索引维护、天气/额度轮询
+- SD 写入由 `storage_sd` 串行化；录音、会话、记忆和日志不得各自并发操作 FATFS
 
 | 任务 | 栈 | 优先级 | 组件 |
 |---|---|---|---|
 | main_task | 默认 | 1 | app_main（启动后即退出） |
-| ui_task | 4096 | 5 | ui_manager（30ms轮询按键，1s页面tick） |
+| ui_task | 4096 | 5 | ui_manager（当前 30ms 轮询按键、1s 页面 tick；R0 迁走按键） |
 | env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV） |
 | claude_quota_task | 4096 | 3 | claude_quota_client（60s轮询Mac桥接服务，mDNS+HTTP+cJSON解析） |
 | weather_task | 4096 | 3 | weather_client（15分钟轮询Mac桥接服务，mDNS+HTTP+cJSON解析） |
 | *(后续新增在此登记)* | | | |
 
-## 7. 密钥管理
+## 8. 云端与持久化约定
+
+- `llm_provider` 的生产 Adapter 只允许 SiliconFlow 与 DeepSeek；模型名、base URL、超时和凭据引用配置化，业务 Module 不得硬编码供应商 URL。
+- ASR/TTS 可通过 SiliconFlow，LLM API 不可用时必须释放网络/音频资源并回到可交互状态；不得把模型请求无限重试。
+- 所有 agent 会话、Skill、任务和长期记忆数据经 `storage_sd` 管理，使用相对路径；模型和工具不得传入任意文件路径。
+- 长期记忆数据、索引、召回、遗忘和维护必须在板端 `memory_engine` 完成。云 LLM 只能产出候选，设备负责 schema、隐私、来源、TTL 和最终落盘决策。
+- 公开网页、工具结果和消息内容都是不可信数据；它们不能注册工具、修改 system prompt、提升权限或绕过 BOOT 确认。
+
+## 9. 密钥管理
 
 - WiFi 密码、和风天气 API Key、LLM token **一律不进仓库**
 - 开发期放 `firmware/main/secrets.h`（已在 `.gitignore` 里），提供 `secrets.h.example` 模板
 - 正式方案：存 NVS，通过配网写入
 
-## 8. Vendor 代码
+## 10. Vendor 代码
 
 从官方 demo 摘任何代码，**必须**同时在 `docs/vendor-provenance.md` 登记来源路径 + commit。摘来的寄存器序列、魔数不准"顺手优化"，原样保留并注释标明出处。
 
-## 9. 注释
+## 11. 注释
 
 - 注释写**为什么**，不写**是什么**（代码本身就说明是什么）
 - 硬件魔数、寄存器序列、非常规算法（如 ST7305 的交错位序）**必须**注释解释，否则半年后没人看得懂
 - 全项目注释统一用中文（与现有代码保持一致）
 
-## 10. 提交前检查清单
+## 12. 提交前检查清单
 
 - [ ] 没有裸 GPIO 号散落在 board 之外
 - [ ] 驱动/服务层没有 `ESP_ERROR_CHECK`
 - [ ] 没有文件超 400 行 / 函数超 60 行 / app_main 超 100 行
 - [ ] 没有横向或向上的依赖
-- [ ] 新任务已在第6节表格登记
+- [ ] 新页面未直接读取设备/网络/SD，新增按键逻辑未绕过 `input_manager`
+- [ ] 新任务已在第7节表格登记
+- [ ] 新的云/SD/记忆逻辑未泄漏 provider、路径或索引细节到调用方
 - [ ] 新摘取的 vendor 代码已在 provenance 登记
 - [ ] 密钥没进仓库
 - [ ] 真机验证过（不是只编译通过）

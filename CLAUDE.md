@@ -1,12 +1,10 @@
 # CLAUDE.md
 
-本文件是给未来 Claude Code 会话看的权威上下文，避免重复调研。
-
-**写代码前必读 [`docs/coding-standards.md`](docs/coding-standards.md)** —— 分层依赖规则、文件体积红线、错误处理、页面接口契约都是强制约定。硬件引脚的唯一权威来源是 [`docs/hardware-pinmap.md`](docs/hardware-pinmap.md)。
+**写代码前必读 [`docs/coding-standards.md`](docs/coding-standards.md)** —— 分层依赖规则、文件体积红线、错误处理、页面 Interface 契约都是强制约定。硬件引脚的唯一权威来源是 [`docs/hardware-pinmap.md`](docs/hardware-pinmap.md)。P5-P8 的功能取舍、板载记忆和验收路线以 [`docs/voice-agent-design.md`](docs/voice-agent-design.md) 为准；R0 架构迁移和现有四页改版以 [`docs/r0-ui-v2-spec.md`](docs/r0-ui-v2-spec.md) 为准。
 
 ## 项目是什么
 
-Waveshare ESP32-S3-RLCD-4.2 开发板固件，目标是打造一个桌面终端，集成：低功耗时钟+天气、语音交互(唤醒词+LLM对话)、环境监测记录(温湿度+SD打点)、Claude Code用量额度显示。
+Waveshare ESP32-S3-RLCD-4.2 开发板固件，目标是打造一个桌面终端，集成：低功耗时钟+天气、语音交互(唤醒词+LLM对话)、环境监测记录(温湿度+SD打点)、Claude Code用量额度显示，并逐步升级为 agent runtime、会话、长期记忆和任务调度都运行在开发板上的个人智能体。模型计算允许使用 SiliconFlow 和 DeepSeek API。
 
 ## 框架选型：ESP-IDF（非Arduino）
 
@@ -25,7 +23,7 @@ Waveshare ESP32-S3-RLCD-4.2 开发板固件，目标是打造一个桌面终端�
 
 ## 固件Component现状与规划
 
-依赖只能向下（详见规范第1节）：`main → ui_pages → ui_manager → 服务层 → 驱动层 → board_rlcd42`
+P0-P4 的页面、按键和启动编排仍有遗留直接依赖；P5 起按规范第1节迁移到 `main → app_runtime → sys_state/input_manager/UI/voice/平台 Module → board_rlcd42`。不要为新功能扩大旧的直接依赖。
 
 **已实现**
 
@@ -33,16 +31,16 @@ Waveshare ESP32-S3-RLCD-4.2 开发板固件，目标是打造一个桌面终端�
 |---|---|
 | `board_rlcd42` | 唯一的引脚定义与总线init(I2C/SPI/按键)，暴露handle与I2C扫描 |
 | `display_st7305` | ST7305反射屏驱动：1bpp帧缓冲、画点/矩形、ASCII 8×8字体、**中文16×16字库(UTF-8混排)** |
-| `ui_manager` | 页面注册、导航、按键长短按判定、tick调度（ui_task） |
-| `ui_pages` | `page_home`(时钟/日期/温湿度/网络状态)、`page_env_monitor`(温湿度趋势折线图)、`page_quota`(Claude用量5h/7d窗口)、`page_weather`(和风天气实况)。`page_diag`(硬件自检)已从`app_main.c`注册中移除、不再出现在设备实机翻页里，但文件保留作为**新页面参照范例**(见文件头注释) |
+| `ui_manager` | 页面注册、导航、tick 调度（`ui_task`）；现有 GPIO 按键判定是 R0 待迁移遗留，不再扩展 |
+| `ui_pages` | `page_home`(时钟/日期/温湿度/网络状态)、`page_env_monitor`(温湿度趋势折线图)、`page_quota`(Claude用量5h/7d窗口)、`page_weather`(和风天气实况)。`page_diag`(硬件自检)已从`app_main.c`注册中移除、不再出现在设备实机翻页里，但文件保留作为**新页面参照范例**(见文件头注释)。现有页面直读设备数据是迁移遗留，新页面必须只读 `sys_state` |
 | `sensor_shtc3` | SHTC3温湿度读取 |
 | `rtc_pcf85063` | RTC读写(BCD转换)、掉电检测。**符号必须用全前缀**，见Gotchas |
 | `net_manager` | WiFi STA连接、断线自动重连 |
 | `time_service` | 启动从RTC恢复时间，联网后SNTP校时并写回RTC |
-| `storage_sd` | SD卡挂载(SDMMC 1-bit + FATFS)，`storage_sd_append_line()`按相对路径追加写 |
+| `storage_sd` | SD卡挂载(SDMMC 1-bit + FATFS)，当前只有 `storage_sd_append_line()`；P5 前深化为所有 SD 持久化的唯一 Module |
 | `battery` | 电池电压ADC(GPIO4,3倍分压,eFuse校准)，电量百分比估算 |
 | `env_logger` | 后台任务60s采样SHTC3，环形缓冲(1小时窗口)+CSV落盘(经`storage_sd`，SD卡可选) |
-| `claude_quota_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/quota/compact`+cJSON解析，60s周期(登记于coding-standards第6节) |
+| `claude_quota_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/quota/compact`+cJSON解析，60s周期(登记于coding-standards第7节) |
 | `weather_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/weather`+cJSON解析，15分钟周期。**不直连QWeather**，原因见下方"P3 天气代理"一节 |
 
 **中文字库**：`tools/charset.txt` 维护字符集 → `python3 tools/gen_font.py` 生成 `font_cn16.c`。
@@ -52,9 +50,28 @@ Waveshare ESP32-S3-RLCD-4.2 开发板固件，目标是打造一个桌面终端�
 
 | Component | 职责 | Phase |
 |---|---|---|
-| `audio_pipeline` / `wakeword` / `voice_assistant` | ES8311/ES7210音频、ESP-SR唤醒、LLM对话 | P5 |
+| `app_runtime` | 启动顺序、功能注册、可选能力降级；接管 `app_main` 的启动编排 | R0 |
+| `sys_state` | 状态快照、事件、命令；UI、工具、服务的唯一共享状态 Interface | R0 |
+| `input_manager` | KEY/BOOT 消抖、长短按、语义事件；接管 `ui_manager` 的 GPIO 逻辑 | R0 |
+| `cloud_transport` | TLS、HTTP 流、SSE、取消、重试；云 client 共用 | P5.0 |
+| `audio_pipeline` / `wakeword` / `voice_assistant` | ES8311/ES7210音频、ESP-SR唤醒、一轮语音编排与取消 | P5 |
+| `agent_runtime` / `agent_session` / `agent_tool_registry` | Pi 风格消息/工具循环、SD 会话、工具权限与输出预算 | P6.0 |
+| `memory_engine` / `scheduler` | 板载长期记忆与持久任务；数据、检索、维护全部在 SD/设备端 | P6.2/P6.3 |
 
-**新增页面的做法**：在 `ui_pages/pages/` 下照抄 `page_diag.c` 的结构，实现 `ui_page_t`，在 `ui_pages.h` 暴露 getter，在 `app_main.c` 注册一行。**不要改 ui_manager**。
+## P5/P6 架构迁移（强制）
+
+当前 P0-P4 能工作，但不能原样叠加语音和 agent。新代码必须遵守以下归属：
+
+- `app_main.c` 只做芯片诊断和 `app_runtime_start()`；不再直接初始化/注册所有业务 Module。
+- 页面只读取 `sys_state` snapshot、渲染和 post command；不能读传感器、电池、网络、SD，也不能自己起后台任务。
+- `input_manager` 是唯一 GPIO 输入所有者。KEY 短按 NEXT、长按 VOICE；BOOT 短按 ACTION/确认、长按 BACK/CANCEL；PWR 无固件行为。
+- `storage_sd` 串行化录音、会话、Skill、任务和记忆写入；调用方只用相对路径和小 Interface，不接触 FATFS/文件恢复细节。
+- `cloud_transport` 隐藏 TLS/SSE/取消；`llm_provider` 仅因 SiliconFlow 与 DeepSeek 两个实际生产 Adapter 而存在。不要为 `memory_engine` 建立远程 provider。
+- `memory_engine` 保存、检索、遗忘和维护都在板端。LLM 只输出候选，设备验证 schema、来源、敏感信息、TTL 与最终落盘。
+
+迁移采用替换而不是叠加：先建 `sys_state`/`input_manager`/`app_runtime` 的稳定 Interface，再逐个迁移旧页面和启动逻辑。不要一边保留旧的直接读取路径，一边为同一数据再加一套同步状态。
+
+**新增页面的做法**：在 `ui_pages/pages/` 下照抄 `page_diag.c` 的结构，实现 `ui_page_t`，在 `ui_pages.h` 暴露 getter，由 `app_runtime` 注册。**不要改 ui_manager**，也不要从页面直读设备或网络。
 
 ## P4 用量数据源（重要设计决定）
 
@@ -89,8 +106,12 @@ Python标准库`gzip.decompress()`一行代码解决，所以`bridge/server.py`�
 | P2 | 环境监测MVP：RTC+SHTC3+SD打点+趋势页面 ✅已完成并真机验证 | CSV持续写入(2个采样周期0错误)，SD卡格式化后持久挂载，断电重启RTC不丢时间 |
 | P3 | 联网时钟天气：WiFi+NTP+mDNS+和风天气 ✅已完成并真机验证 | 显示正确本地时间与指定城市天气(bridge日志确认ESP32多次成功轮询`/api/weather`拿到200，`page_weather`展示"阴/东风0级/29℃/89%"等真实数据) |
 | P4 | Claude额度显示：Mac桥接服务+ESP32轮询+额度页面 ✅已完成并真机验证 | 屏幕数字与手动核对吻合(bridge日志确认ESP32多次成功轮询`/api/quota/compact`拿到200) |
-| P5 | 语音交互：音频链路+ESP-SR唤醒词+LLM对话 | 唤醒可靠，问答闭环完整 |
-| P6 | 打磨：页面导航UX、功耗策略、看门狗、稳定性 | 长时间稳定运行 |
+| R0 | 架构治理：`app_runtime`、`sys_state`、`input_manager`、深化 `storage_sd` | P0-P4 行为不退化；页面/按键/启动的遗留依赖不再扩大 |
+| P5.0 | 云 API 与资源验证：SiliconFlow ASR/TTS、SiliconFlow/DeepSeek LLM、SSE/Tools | 两个 LLM Adapter 可配置切换；失败、取消、限流可释放资源 |
+| P5.1-P5.2 | 语音链路：音频、ESP-SR、Wake/VAD/ASR/LLM/TTS | 唤醒可靠，单轮问答闭环完整 |
+| P6.0-P6.1 | 板载 agent：Pi 风格 loop、本地工具、SD 会话、Web/Skills | 工具权限和上下文预算可控；外部网页不能越权 |
+| P6.2-P6.3 | 个人智能体：板载记忆、提醒/cron，按需接 HA 或 Telegram | 记忆可重建、可删除；掉电任务不重复执行 |
+| P7-P8 | 可选 Companion 与产品化：仅重型能力、稳定性、OTA、安全 | Companion 断开不影响 L1-L4；长期运行稳定 |
 
 ## 构建
 
