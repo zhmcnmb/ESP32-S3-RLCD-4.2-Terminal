@@ -235,7 +235,7 @@ static void p51_selftest_task(void *arg)
                 break;
             }
 
-            ESP_LOGI(TAG, "[#%d] 录音 %zu样本(%zums) → 写WAV", n, n * 1000 / SAMPLE_RATE);
+            ESP_LOGI(TAG, "[#%d] 录音 %zu样本(%zums) → 写WAV", s_wake_count, n, n * 1000 / SAMPLE_RATE);
             esp_err_t werr = write_wav_to_sd(utt_buf, n);
             if (werr == ESP_OK) {
                 ESP_LOGI(TAG, "[#%d] WAV已写入 /sdcard/p51_test.wav (%zuB)",
