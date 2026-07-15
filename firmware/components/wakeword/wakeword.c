@@ -239,8 +239,11 @@ static void wakeword_task(void *arg)
                 }
             }
 
-            /* 追加 AFE 输出到语音段缓冲 */
-            if (s_ctx.utterance_buf && res->data && res->data_size > 0) {
+            /* 追加 AFE 输出到语音段缓冲：只在 VAD 判定为真实语音时追加，避免
+             * 唤醒词命中后到用户真正开口前的"死空气"被写进上一轮遗留的缓冲区，
+             * 提前把240000样本(15s)上限打满而截断真正的语音(真机复现:唤醒后
+             * 停顿约7秒才开口，缓冲提前溢出上百次) */
+            if (vad_active && s_ctx.utterance_buf && res->data && res->data_size > 0) {
                 size_t samples = res->data_size / sizeof(int16_t);
                 append_utterance(res->data, samples);
             }

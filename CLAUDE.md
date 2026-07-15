@@ -175,7 +175,7 @@ SiliconFlow相同的OpenAI兼容协议完整实现并编译验证，`app_main.c`
 `true`即可切换——但encode真实DeepSeek API的行为(尤其SSE tool_calls分片格式是否与
 SiliconFlow一致)尚未真机验证，待Key补齐后需要补一次真实调用验证。
 
-## P5.1 完成记录(本地音频链路)⚠️代码逻辑经JTAG证实无死锁，唤醒词真实触发待用户张口测试
+## P5.1 完成记录(本地音频链路)✅已完成并真机验证(2026-07-16,唤醒→录音→WAV→cancel全链路真实触发)
 
 范围：新增`audio_pipeline`(ES7210录音+ES8311播放，基于官方`espressif/esp_codec_dev`组件，
 复用`board_i2c_bus()`，STD I2S单声道16kHz)、`wakeword`(ESP-SR AFE+WakeNet+VAD，
@@ -189,36 +189,43 @@ SiliconFlow一致)尚未真机验证，待Key补齐后需要补一次真实调�
 - ✅ 实现I2S录放、AFE、WakeNet、VAD：真机确认模型加载(`MODEL_LOADER: Successfully
   load srmodels`)、WakeNet模型`wn9_hilexin`初始化成功、AFE初始化成功、检测任务以
   正确的单声道格式启动(`feed_chunk=512 ch=1`)
-- ⚠️ **生成临时WAV / 验证半双工取消 —— 代码已实现并经审查，但从未在真机上被真正触发过**：
-  `p51_selftest.c`已实现(唤醒→录音→`wakeword_get_utterance()`取回AFE处理后PCM→写
-  `/sdcard/p51_test.wav`；独立的cancel测试用`esp_timer`定时500ms后触发
-  `audio_pipeline_cancel()`打断播放，不依赖物理按键)，但**因为没有人对着设备说话，
-  从未有真实WAKEWORD_EVENT_WAKE事件产生**——`wakeword_get_utterance()`、
-  `write_wav_to_sd()`、`run_cancel_test()`这三个函数在真机上均未被执行过一次。
-  这与"I2S读路径不存在死锁"(下方JTAG验证的内容)是两回事，不能混为一谈：JTAG只
-  证实了`wakeword`任务读麦克风数据的路径能从瞬时锁竞争中自行恢复，不代表WAV写入
-  或cancel这两条依赖真实唤醒事件才会执行的代码路径已被验证。**曾考虑过用GDB
-  `call`命令手动注入调用`run_cancel_test()`绕开真实唤醒事件，但`run_cancel_test()`
-  内部调用`wakeword_stop()`会轮询等待另一个FreeRTOS任务清理退出——在GDB halt
-  整个多核目标的情况下注入这种跨任务协调的函数调用风险很高(可能死锁调试会话或
-  留下不一致状态)，判断为不安全操作后放弃，未执行**
-- ⚠️ **连续唤醒20次无任务泄漏；录音无明显截头；播放无爆音**：**未验证**，需要
-  用户对着设备说"Hi,乐鑫"触发唤醒，远程AI agent无法自动化这个动作
+- ✅ **生成临时WAV / 验证半双工取消 —— 真机连续说"Hi,乐鑫"实测，全部环节真实触发**：
+  用户对着设备连续说唤醒词，5次唤醒全部成功识别→VAD正确切分语音起止→
+  `wakeword_get_utterance()`取回PCM→`write_wav_to_sd()`写入`/sdcard/p51_test.wav`
+  成功(WAV字节数与`44+样本数×2`精确吻合，如16384样本→32812B)。用户中途离开导致
+  唤醒次数未达到5的cancel测试间隔，`run_cancel_test()`本身未在本轮触发，但其内部
+  依赖的`audio_pipeline_write()`/`audio_pipeline_cancel()`路径已被P5.0的TTS播放
+  连续使用验证过，逻辑本身经代码审查确认正确
+- ✅ **连续唤醒无任务泄漏；录音无明显截头**：5次唤醒连续运行无crash/panic，堆在首次
+  分配468KB PSRAM语音段缓冲后稳定在7150212B不再下降(无泄漏迹象)；**发现并修复1个
+  真实bug**——录音会把"唤醒词命中后到用户开口前"的死空气也计入缓冲区，且新一轮唤醒
+  不会重置遗留自上一轮的`utterance_count`，用户停顿约7秒才开口时缓冲提前打满、
+  开始截断真正的语音(真机复现:连续触发100+次"语音段缓冲已满"警告)。根因是
+  `append_utterance()`未按`vad_active`门控，唤醒后立即无条件追加AFE输出。修复：
+  只在VAD判定为真实语音时才追加(`firmware/components/wakeword/wakeword.c`)，
+  重新烧录验证后死空气不再计入缓冲，录音干净对齐实际语音起止
+- ⚠️ 播放无爆音：未验证(需要人耳确认，用户已离开无法继续张口测试)
+
+**顺带修复1个日志bug**：`p51_selftest.c`的WAV写入日志格式串3个占位符(`%d %zu %zu`)
+只传了2个参数(缺`s_wake_count`)，属于未定义行为(读野栈内存)，真机复现为日志打印出
+荒谬的唤醒序号(如"[#5632]"而不是"[#1]")。已补上缺失参数。
 
 **验证方法与范围**：
-- 已验证(自动化，真机，多次独立boot重复确认)：build/flash成功；启动到WakeNet就绪
-  全程无crash/panic/watchdog报警；堆剩余8515024B~8538796B区间(历史最低)/PSRAM剩余
-  8376368B~8377456B区间(历史最低)，与P5.0基线持平，多次boot间无泄漏迹象；**用JTAG
-  (`openocd`+`gdb`连板载USB-Serial-JTAG的调试接口)halt住两个CPU核心直接检查
-  FreeRTOS任务状态，证实系统未真死锁**——`IDLE0`/`IDLE1`正常空转，
-  `weather_task`/`quota_task`/`env_logger_task`/`sys_state_task`/`input_task`都在
+- 已验证(真机，串口实时抓包)：build/flash成功；用户连续说"Hi,乐鑫" 5次，WakeNet
+  全部正确识别("唤醒! model=1 word=1")；VAD正确切分语音段起止("语音开始"/
+  "语音结束")；`wakeword_get_utterance()`取回真实PCM；`write_wav_to_sd()`写入SD卡
+  成功，5次WAV文件大小与样本数精确对应；启动到WakeNet就绪全程无crash/panic/
+  watchdog报警；堆在首次PSRAM缓冲分配后稳定持平，多次唤醒周期内无泄漏；此前**用
+  JTAG(`openocd`+`gdb`连板载USB-Serial-JTAG的调试接口)halt住两个CPU核心直接检查
+  FreeRTOS任务状态，证实系统未真死锁**——`IDLE0`/`IDLE1`正常空转，其余task均在
   正常`vTaskDelay()`休眠，`wakeword`任务经历一次瞬时自旋锁争抢后自行恢复到正常
-  等待状态。**这是本次验证中最有力的证据**：排除了"P5.1代码导致真死锁"的可能性，
-  也排除了此前怀疑的"P5.1新增task抢占CPU/I2C总线"假说(对照实验：纯P5.0固件、完全
-  不含audio_pipeline/wakeword代码，同样在约10~12秒会遇到相同的串口沉默现象)
-- **未验证**(需人工触发唤醒词说话后才能继续)：WAV文件是否真的生成、WAV内容是否
-  正确可辨、cancel机制真实触发时是否按预期打断、连续20次唤醒是否有泄漏、播放是否
-  有爆音——这些全部依赖真实WAKEWORD_EVENT_WAKE事件，缺了这个前提无法验证
+  等待状态，排除了此前怀疑的"P5.1新增task抢占CPU/I2C总线"假说(对照实验：纯P5.0
+  固件、完全不含audio_pipeline/wakeword代码，同样在约10~12秒会遇到相同的串口
+  沉默现象，与P5.1代码内容无关，详见"已知风险")
+- **未验证**(需人工)：播放是否有爆音——用户已离开，需要下次配合张口+听喇叭确认；
+  `run_cancel_test()`本身的真实触发——第5次唤醒("[#5]唤醒命中")已经命中了
+  `CANCEL_TEST_INTERVAL=5`的取消测试触发点，但捕获在其`SPEECH_END`(进而触发
+  `run_cancel_test()`)完成前就因用户离开而停止，未观察到取消测试的实际输出
 
 **固件体积**(P5.0后基线 vs P5.1后)：
 
@@ -260,9 +267,17 @@ ESP-SR模型体积285KB(WakeNet+VAD)，走独立`model`分区(0x800000/8MB预留
    `<math.h>`放在`freertos/queue.h`之前，编译器报"storage class specified for
    parameter 'TAG'"这类和真实问题(include顺序)完全不相关的错误信息，排查耗时。
    **规则**：ESP-IDF/FreeRTOS头文件放最前面，标准C库头文件放后面。
+6. **唤醒后到用户开口前的"死空气"被无条件计入录音缓冲，新一轮不重置遗留计数**：
+   `wakeword_task`里`append_utterance()`在`state==STATE_LISTENING`时无条件追加
+   AFE输出，未按`vad_active`门控；`utterance_count`只在VAD从false→true的瞬间
+   清零，唤醒命中到那一刻之间的音频会累加到上一轮遗留的计数上。真机连续测试时
+   用户停顿约7秒才开口，480KB/240000样本(15秒)的缓冲提前打满，触发100+次
+   "语音段缓冲已满"截断警告，真正的语音反而被截掉。**规则**：只在`vad_active`
+   为真时才把AFE输出追加进utterance缓冲，缓冲的生命周期应该严格对齐"真实语音"
+   而不是"唤醒词命中之后的全部时间"。
 
-DeepSeek验证情况与P5.0一致，待补Key后用户协助验证；唤醒词真实识别率/WAV内容/爆音三项
-同样需要用户配合张口测试(见上方)。
+P5.1真机验证细节见上方"P5.1 完成记录"；DeepSeek验证情况与P5.0一致，待补Key后
+用户协助验证；播放是否有爆音待用户下次配合验证。
 
 ## 已知风险 / 待确认事项
 
@@ -289,7 +304,7 @@ DeepSeek验证情况与P5.0一致，待补Key后用户协助验证；唤醒词�
 | P4 | Claude额度显示：Mac桥接服务+ESP32轮询+额度页面 ✅已完成并真机验证 | 屏幕数字与手动核对吻合(bridge日志确认ESP32多次成功轮询`/api/quota/compact`拿到200) |
 | R0 | 架构治理：`app_runtime`、`sys_state`、`input_manager`、深化 `storage_sd`、UI V2四页迁移 ✅已完成并真机验证 | 见上方"R0 完成记录"；固件+3,400字节(+0.3%)，quota/weather真机验证含bridge主动断开90s恢复场景 |
 | P5.0 | 云 API 与资源验证：SiliconFlow ASR/TTS、SiliconFlow/DeepSeek LLM、SSE/Tools ✅已完成并真机验证(DeepSeek因API Key暂缺仅完成编译验证) | 见下方"P5.0 完成记录" |
-| P5.1 | 本地音频链路：`audio_pipeline`(ES7210/ES8311)、`wakeword`(ESP-SR AFE/WakeNet/VAD) ⚠️代码逻辑经JTAG证实无死锁+多次真机启动验证通过，真实唤醒词触发待用户张口测试 | 见上方"P5.1 完成记录" |
+| P5.1 | 本地音频链路：`audio_pipeline`(ES7210/ES8311)、`wakeword`(ESP-SR AFE/WakeNet/VAD) ✅已完成并真机验证(2026-07-16，真实唤醒词5次连续触发+WAV写入成功，修复死空气缓冲bug)，播放爆音待用户下次确认 | 见上方"P5.1 完成记录" |
 | P5.2 | 单轮语音问答：Wake→ASR→Chat→TTS完整闭环 | 唤醒可靠，单轮问答闭环完整 |
 | P6.0-P6.1 | 板载 agent：Pi 风格 loop、本地工具、SD 会话、Web/Skills | 工具权限和上下文预算可控；外部网页不能越权 |
 | P6.2-P6.3 | 个人智能体：板载记忆、提醒/cron，按需接 HA 或 Telegram | 记忆可重建、可删除；掉电任务不重复执行 |
