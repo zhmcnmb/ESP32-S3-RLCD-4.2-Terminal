@@ -9,6 +9,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mdns.h"
+#include "sys_state.h"
 
 static const char *TAG = "quota_client";
 
@@ -71,9 +72,12 @@ static esp_err_t parse_and_store(const char *json_str)
     bool ok = cJSON_IsBool(available) && cJSON_IsTrue(available)
             && cJSON_IsObject(h5) && cJSON_IsObject(d7);
     if (!ok) {
-        /* 桥接服务明确返回 available:false(如未登录omp)，不是解析错误，按"暂不可用"处理 */
+        /* 桥接服务明确返回 available:false(如未登录omp)，不是解析错误，按"暂不可用"处理。
+         * sys_state保留上一次成功的数值(不清零)，页面据此区分"从未有数据"和"有旧数据可展示" */
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_quota.available = false;
+        sys_state_apply_quota(false, s_quota.used_5h, s_quota.used_7d,
+                              s_quota.resets_5h, s_quota.resets_7d, s_quota.fetched_at);
         xSemaphoreGive(s_lock);
         cJSON_Delete(root);
         return ESP_OK;
@@ -91,6 +95,8 @@ static esp_err_t parse_and_store(const char *json_str)
     s_quota.used_7d = (float)cJSON_GetNumberValue(d7_used);
     s_quota.resets_7d = (time_t)cJSON_GetNumberValue(d7_resets);
     s_quota.fetched_at = (time_t)cJSON_GetNumberValue(fetched_at);
+    sys_state_apply_quota(true, s_quota.used_5h, s_quota.used_7d,
+                          s_quota.resets_5h, s_quota.resets_7d, s_quota.fetched_at);
     xSemaphoreGive(s_lock);
 
     cJSON_Delete(root);

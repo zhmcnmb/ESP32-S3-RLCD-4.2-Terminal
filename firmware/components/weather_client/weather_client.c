@@ -9,6 +9,7 @@
 #include "freertos/semphr.h"
 #include "freertos/task.h"
 #include "mdns.h"
+#include "sys_state.h"
 
 static const char *TAG = "weather_client";
 
@@ -77,9 +78,12 @@ static esp_err_t parse_and_store(const char *json_str_body)
 
     cJSON *available = cJSON_GetObjectItem(root, "available");
     if (!cJSON_IsBool(available) || !cJSON_IsTrue(available)) {
-        /* 桥接服务明确返回 available:false(如未配置qweather_*)，不是解析错误，按"暂不可用"处理 */
+        /* 桥接服务明确返回 available:false(如未配置qweather_*)，不是解析错误，按"暂不可用"处理。
+         * sys_state保留上一次成功的数值(不清零)，页面据此区分"从未有数据"和"有旧数据可展示" */
         xSemaphoreTake(s_lock, portMAX_DELAY);
         s_weather.available = false;
+        sys_state_apply_weather(false, s_weather.temperature, s_weather.humidity,
+                                s_weather.condition, s_weather.wind, s_weather.fetched_at);
         xSemaphoreGive(s_lock);
         cJSON_Delete(root);
         return ESP_OK;
@@ -96,6 +100,8 @@ static esp_err_t parse_and_store(const char *json_str_body)
     json_str(root, "condition", s_weather.condition, sizeof(s_weather.condition));
     snprintf(s_weather.wind, sizeof(s_weather.wind), "%s%s级", wind_dir, wind_scale);
     s_weather.fetched_at = (time_t)json_num(root, "fetched_at");
+    sys_state_apply_weather(true, s_weather.temperature, s_weather.humidity,
+                            s_weather.condition, s_weather.wind, s_weather.fetched_at);
     xSemaphoreGive(s_lock);
 
     cJSON_Delete(root);

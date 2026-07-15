@@ -23,7 +23,9 @@ Waveshare ESP32-S3-RLCD-4.2 开发板固件，目标是打造一个桌面终端�
 
 ## 固件Component现状与规划
 
-P0-P4 的页面、按键和启动编排仍有遗留直接依赖；P5 起按规范第1节迁移到 `main → app_runtime → sys_state/input_manager/UI/voice/平台 Module → board_rlcd42`。不要为新功能扩大旧的直接依赖。
+R0已完成：`main → app_runtime → sys_state/input_manager/ui_manager+ui_pages/平台Module → board_rlcd42`
+分层已落地，四个业务页面只读 `sys_state` 快照，不再直接依赖传感器/电池/网络/SD/服务组件。
+P5起新增功能继续遵守这条依赖方向，不要为语音/agent开临时直读后门。
 
 **已实现**
 
@@ -31,47 +33,72 @@ P0-P4 的页面、按键和启动编排仍有遗留直接依赖；P5 起按规�
 |---|---|
 | `board_rlcd42` | 唯一的引脚定义与总线init(I2C/SPI/按键)，暴露handle与I2C扫描 |
 | `display_st7305` | ST7305反射屏驱动：1bpp帧缓冲、画点/矩形、ASCII 8×8字体、**中文16×16字库(UTF-8混排)** |
-| `ui_manager` | 页面注册、导航、tick 调度（`ui_task`）；现有 GPIO 按键判定是 R0 待迁移遗留，不再扩展 |
-| `ui_pages` | `page_home`(时钟/日期/温湿度/网络状态)、`page_env_monitor`(温湿度趋势折线图)、`page_quota`(Claude用量5h/7d窗口)、`page_weather`(和风天气实况)。`page_diag`(硬件自检)已从`app_main.c`注册中移除、不再出现在设备实机翻页里，但文件保留作为**新页面参照范例**(见文件头注释)。现有页面直读设备数据是迁移遗留，新页面必须只读 `sys_state` |
-| `sensor_shtc3` | SHTC3温湿度读取 |
+| `input_manager` | KEY/BOOT消抖+长短按判定，唯一GPIO输入所有者，发布NEXT/ACTION/BACK/VOICE语义事件 |
+| `sys_state` | 状态快照聚合：时间/瞬时温湿度/电池/WiFi/SD由内部轮询任务采集，环境历史/天气/额度由对应Producer推送；`sys_state_get_snapshot()`一次性一致读取 |
+| `app_runtime` | 启动编排：硬件init→可选服务→UI注册→异步联网，接管原`app_main.c`全部业务逻辑，密钥经`app_runtime_config_t`传入(不直接依赖`secrets.h`避免组件循环依赖) |
+| `ui_manager` | 页面注册、导航、tick调度（`ui_task`）；只消费`input_manager`语义事件，不读GPIO |
+| `ui_pages` | `page_home`(桌面时钟+温湿度摘要)、`page_env_monitor`(温湿度趋势)、`page_quota`(Claude用量5h/7d)、`page_weather`(和风天气实况)，均只读`sys_state`快照(UI V2布局，见`docs/r0-ui-v2-spec.md`)。内部私有视觉原语`ui_v2.h/c`(共享页头/页脚/分隔线/空状态)与`ui_icons.h/c`(状态/天气图标)不对外暴露。`page_diag`(硬件自检)已从注册中移除，文件保留作为**旧式直读页面参照范例** |
+| `sensor_shtc3` | SHTC3温湿度读取，内部互斥锁防多任务并发 |
 | `rtc_pcf85063` | RTC读写(BCD转换)、掉电检测。**符号必须用全前缀**，见Gotchas |
-| `net_manager` | WiFi STA连接、断线自动重连 |
+| `net_manager` | WiFi STA连接、断线自动重连(慢速重试用`esp_timer`单次定时器，事件回调不阻塞)；`net_manager_register_connected_cb()`供首次GOT_IP一次性回调(SNTP启动用) |
 | `time_service` | 启动从RTC恢复时间，联网后SNTP校时并写回RTC |
-| `storage_sd` | SD卡挂载(SDMMC 1-bit + FATFS)，当前只有 `storage_sd_append_line()`；P5 前深化为所有 SD 持久化的唯一 Module |
+| `storage_sd` | SD卡挂载(SDMMC 1-bit + FATFS)；深化后Interface = append/stream read/atomic replace/checkpoint，内部互斥锁串行化+路径校验(拒绝`..`和绝对路径) |
 | `battery` | 电池电压ADC(GPIO4,3倍分压,eFuse校准)，电量百分比估算 |
-| `env_logger` | 后台任务60s采样SHTC3，环形缓冲(1小时窗口)+CSV落盘(经`storage_sd`，SD卡可选) |
-| `claude_quota_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/quota/compact`+cJSON解析，60s周期(登记于coding-standards第7节) |
-| `weather_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/weather`+cJSON解析，15分钟周期。**不直连QWeather**，原因见下方"P3 天气代理"一节 |
-
-**中文字库**：`tools/charset.txt` 维护字符集 → `python3 tools/gen_font.py` 生成 `font_cn16.c`。
-源码字符串字面量里的中文会被`gen_font.py`自动扫描收录，**新增文案后只需重跑脚本**；只有运行时才出现、源码里没有字面量的文案(如天气API返回的现象词、风向)才需要手工写进`charset.txt`。缺字时屏幕显示空心框。当前231字约7.7KB。
+| `env_logger` | 后台任务60s采样SHTC3，环形缓冲(1小时窗口)+CSV落盘(经`storage_sd`)，每次采样后把历史整体推给`sys_state` |
+| `claude_quota_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/quota/compact`+cJSON解析，60s周期，结果推给`sys_state`(登记于coding-standards第7节) |
+| `weather_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/weather`+cJSON解析，15分钟周期，结果推给`sys_state`。**不直连QWeather**，原因见下方"P3 天气代理"一节 |
 
 **待实现**
 
 | Component | 职责 | Phase |
 |---|---|---|
-| `app_runtime` | 启动顺序、功能注册、可选能力降级；接管 `app_main` 的启动编排 | R0 |
-| `sys_state` | 状态快照、事件、命令；UI、工具、服务的唯一共享状态 Interface | R0 |
-| `input_manager` | KEY/BOOT 消抖、长短按、语义事件；接管 `ui_manager` 的 GPIO 逻辑 | R0 |
 | `cloud_transport` | TLS、HTTP 流、SSE、取消、重试；云 client 共用 | P5.0 |
 | `audio_pipeline` / `wakeword` / `voice_assistant` | ES8311/ES7210音频、ESP-SR唤醒、一轮语音编排与取消 | P5 |
 | `agent_runtime` / `agent_session` / `agent_tool_registry` | Pi 风格消息/工具循环、SD 会话、工具权限与输出预算 | P6.0 |
 | `memory_engine` / `scheduler` | 板载长期记忆与持久任务；数据、检索、维护全部在 SD/设备端 | P6.2/P6.3 |
 
-## P5/P6 架构迁移（强制）
+**中文字库**：`tools/charset.txt` 维护字符集 → `python3 tools/gen_font.py` 生成 `font_cn16.c`。
+源码字符串字面量里的中文会被`gen_font.py`自动扫描收录，**新增文案后只需重跑脚本**；只有运行时才出现、源码里没有字面量的文案(如天气API返回的现象词、风向)才需要手工写进`charset.txt`。缺字时屏幕显示空心框。当前244字约8.1KB(R0 UI V2改版新增13字)。
 
-当前 P0-P4 能工作，但不能原样叠加语音和 agent。新代码必须遵守以下归属：
+## 架构分层规则（R0已落地，强制维持）
 
-- `app_main.c` 只做芯片诊断和 `app_runtime_start()`；不再直接初始化/注册所有业务 Module。
-- 页面只读取 `sys_state` snapshot、渲染和 post command；不能读传感器、电池、网络、SD，也不能自己起后台任务。
-- `input_manager` 是唯一 GPIO 输入所有者。KEY 短按 NEXT、长按 VOICE；BOOT 短按 ACTION/确认、长按 BACK/CANCEL；PWR 无固件行为。
-- `storage_sd` 串行化录音、会话、Skill、任务和记忆写入；调用方只用相对路径和小 Interface，不接触 FATFS/文件恢复细节。
+`main → app_runtime → sys_state/input_manager/ui_manager+ui_pages/平台Module → board_rlcd42` 已经是当前代码的实际结构，不是待办。新代码必须遵守以下归属，不准开临时直读后门：
+
+- `app_main.c`(35行) 只做芯片诊断和把`secrets.h`装进`app_runtime_config_t`传给`app_runtime_start()`；不直接初始化/注册任何业务 Module(`app_runtime`不依赖`secrets.h`本身，避免`main`↔`app_runtime`组件循环依赖)。
+- 页面只调用一次 `sys_state_get_snapshot()` 取得整体一致快照、渲染；不能读传感器、电池、网络、SD，也不能自己起后台任务。R0尚未提供"post command"通道(现有4页BOOT ACTION都只是"用当前缓存重绘"，见`docs/r0-ui-v2-spec.md` Implementation Decisions)。
+- `input_manager` 是唯一 GPIO 输入所有者。KEY 短按 NEXT、长按 VOICE；BOOT 短按 ACTION、长按 BACK(语义由消费方按上下文解读为"返回"或"取消")；PWR 无固件行为。`input_manager`的回调只入队，真正的绘制/dispatch只在`ui_manager`自己的`ui_task`里发生，避免多任务竞争帧缓冲/SPI。
+- `storage_sd` 深化后 Interface = `append`/`read_chunk`/`atomic_replace`/`checkpoint`，内部互斥锁串行化+路径校验(拒绝`..`和绝对路径)；调用方只用相对路径，不接触 FATFS 细节。`checkpoint()`目前是空操作(当前所有写入都在单次调用内open+write+close，已经落盘)，留着Interface给未来批量写入模式用。
 - `cloud_transport` 隐藏 TLS/SSE/取消；`llm_provider` 仅因 SiliconFlow 与 DeepSeek 两个实际生产 Adapter 而存在。不要为 `memory_engine` 建立远程 provider。
 - `memory_engine` 保存、检索、遗忘和维护都在板端。LLM 只输出候选，设备验证 schema、来源、敏感信息、TTL 与最终落盘。
 
-迁移采用替换而不是叠加：先建 `sys_state`/`input_manager`/`app_runtime` 的稳定 Interface，再逐个迁移旧页面和启动逻辑。不要一边保留旧的直接读取路径，一边为同一数据再加一套同步状态。
+**新增页面的做法**：在 `ui_pages/pages/` 下新建`page_xxx.c`，实现 `ui_page_t`，只读 `sys_state_snapshot_t`，复用`ui_v2.h`(共享页头/页脚/分隔线/空状态)和`ui_icons.h`(图标)，在 `ui_pages.h` 暴露 getter，由 `app_runtime` 注册。**不要改 ui_manager**，也不要从页面直读设备或网络；`page_diag.c`保留作为"旧式直读"反面参照(文件头注释已说明，不要照抄它的直读模式)。
 
-**新增页面的做法**：在 `ui_pages/pages/` 下照抄 `page_diag.c` 的结构，实现 `ui_page_t`，在 `ui_pages.h` 暴露 getter，由 `app_runtime` 注册。**不要改 ui_manager**，也不要从页面直读设备或网络。
+## R0 完成记录(架构治理 + UI V2)
+
+范围：网络确定性修复 → `sys_state` → `input_manager` → `app_runtime` → `storage_sd`深化 → UI V2视觉原语 + 四页迁移，按`docs/r0-ui-v2-spec.md`第13节顺序实施，逐步真机验证(细节见该文档)。
+
+**完成标准核对**(对照`docs/r0-ui-v2-spec.md`第14节)：
+- ✅ 四页均不再直接读取传感器/电池/网络/SD，只读`sys_state`快照(已用`grep`确认四个page_*.c不再include旧direct-read头文件)
+- ✅ `ui_manager`不再读GPIO/判长短按(GPIO消抖长短按已整体移到`input_manager`)
+- ✅ `app_main.c`不含业务Module初始化和页面注册细节(精简到35行，只做芯片诊断+调用`app_runtime_start()`)
+- ✅ WiFi事件回调不阻塞(`vTaskDelay`已替换为`esp_timer`单次定时器)；延迟联网SNTP能自动启动(`net_manager_register_connected_cb`，真机上多次真实断线重连场景都验证过)
+- ✅ 四页共用一致页头(标题+SD/WiFi/电池图标)/页脚(KEY/VOICE/BOOT提示)/空状态(`ui_v2.h`)
+- ⚠️ **无法远程验证**：四页在1米正常室内光线下的实际可读性、KEY/BOOT物理按键手势——本次由AI agent远程完成，没有摄像头/机械臂访问屏幕和按键；已用Python/PIL按真实坐标渲染四页布局mockup做视觉复核(无重叠/越界)，`input_manager`的GPIO持续轮询数分钟无故障，但**建议用户拿到实机后做一次目视确认+物理按键测试**作为最终验收
+- ✅ 页面内容未变化时不做无意义整屏flush：quota/weather保持原有10s节流重绘(避免真机上每秒闪烁)，`env_monitor`保持30s节流；首页每秒刷新是有意为之(时钟本身每秒变化，不算无意义)
+- ✅ P0-P4数据含义、页面顺序、BOOT刷新行为未退化：真机上quota/weather仍能通过bridge成功轮询拿到200，且额外测试了bridge主动关闭90秒+恢复的场景，`claude_quota_client`按预期报`ESP_ERR_HTTP_CONNECT`降级、bridge恢复后静默恢复正常轮询
+- ✅ 新增中文均被字库收录：`tools/gen_font.py`自动扫描新增231→244字，无需手工登记(见下方字库小节)
+- ✅ 固件大小/内存水位改版前后有记录：见下方数据
+
+**固件体积与内存水位**(R0前后对比，R0前基线取自净网络修复后、深层架构改造前的构建)：
+
+| 指标 | R0前 | R0后 | 差值 |
+|---|---|---|---|
+| 固件总镜像 | 1,112,779 字节 | 1,116,179 字节 | +3,400字节(+0.3%) |
+| DIRAM占用率 | 37.06% | 37.96% | +0.9pp |
+| 启动完成时堆剩余 | 未记录(R0前无该诊断) | 约8.56MB(历史最低约8.56MB) | 新增诊断 |
+| 启动完成时PSRAM剩余 | 未记录 | 约8.38MB(历史最低约8.38MB) | 新增诊断 |
+
+体积增量小的原因：R0大部分工作是把已有逻辑重新组织到新的Module边界(app_main→app_runtime、ui_manager内联GPIO→input_manager)，真正新增的代码(sys_state聚合/锁、storage_sd互斥+路径校验、UI V2页头页脚/天气图标)体量都不大。`esp_get_free_heap_size()`+`heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM)`诊断已加进`app_runtime`启动完成日志，后续阶段可直接对比。**per-task栈高水位未采集**(需要开`CONFIG_FREERTOS_USE_TRACE_FACILITY`才能用`vTaskList()`，本次判断非阻塞性收益暂缓，留给P5.0做资源验证时一并开启)。
 
 ## P4 用量数据源（重要设计决定）
 
@@ -96,6 +123,9 @@ Python标准库`gzip.decompress()`一行代码解决，所以`bridge/server.py`�
 - ~~烧录卡在"No serial data received"~~ 已解决：原因是USB连接会话失效(设备节点`/dev/cu.usbmodem101`残留但无实际数据通路)，**重新插拔USB后设备换了新节点`/dev/cu.usbmodem1101`即可正常烧录**——纯软件侧(检查`ioreg`枚举、DTR/RTS复位脉冲)排查不出这类情况，本质是物理连接层，遇到同症状先重插USB
 - **多任务并发读同一I2C设备会导致时序错乱**：`env_logger_task`(60s周期)与`ui_task`(page_home on_enter)同时调用`shtc3_read()`时，无锁的多步命令时序(唤醒→测量→读取→休眠)会被另一任务的命令打断，导致`ESP_ERR_INVALID_RESPONSE`。已修复：`sensor_shtc3`内部加`SemaphoreHandle_t`互斥锁串行化整个读取时序。**新增任何会被多任务调用的I2C多步时序组件都要照此加锁**，不能假设ESP-IDF I2C驱动的单次事务线程安全等于设备协议时序安全
 - **ASCII点阵字体只收录`0x20~0x5A`**（空格到大写Z）：`st7305_draw_text`/`draw_utf8`里的ASCII部分超出这个范围(如`~`0x7E、小写字母)会画成空心框而不是报错，很容易漏看。已踩过一次：`page_env_monitor`用`~`表示数值范围，画出来是空心框，改成`-`(0x2D，在范围内)解决。**新增展示字符串前检查有没有用到`0x5A`以外的ASCII符号**
+- **多个组件互相REQUIRES会形成循环依赖**：曾想让`app_runtime`直接`#include "secrets.h"`，但`secrets.h`物理上在`main/`目录，若给`app_runtime`加`REQUIRES main`就会和`main`已经`REQUIRES app_runtime`（app_main.c调用app_runtime_start()）形成循环。解法：改成`app_runtime_config_t`结构体，由`main`读`secrets.h`后组装、`app_runtime`只认结构体不认头文件——**下层Module需要上层专属配置时用参数传入，不要反向REQUIRES上层**
+- **GCC `-Werror=format-truncation` 对小栈缓冲区的`snprintf`格式串很敏感**：即使实际值不可能超长(如`%d/2`里的`n`来自0~60的采样数)，编译器按`int`理论最大值(10位数)估算就可能报"输出可能被截断"并因`-Werror`导致编译失败。缓冲区按格式串理论最坏长度留够余量(实测`char msg[24]`不够，改`char msg[40]`才过)，不要死抠"看起来够用"的最小值
+- **sys_state/服务层缓存的"数据不可用"不等于"清零数值"**：`weather_client`/`claude_quota_client`收到`available:false`响应时若把数值字段清零再推给`sys_state`，页面就没法区分"从未成功过"和"曾经成功、现在旧了"——正确做法是把上一次的缓存值原样透传给`sys_state_apply_*()`，只翻转`available`标志位，由页面自己根据`updated_at`是否为0判断走哪种空状态/旧数据提示
 
 ## 分阶段路线图
 
@@ -106,7 +136,7 @@ Python标准库`gzip.decompress()`一行代码解决，所以`bridge/server.py`�
 | P2 | 环境监测MVP：RTC+SHTC3+SD打点+趋势页面 ✅已完成并真机验证 | CSV持续写入(2个采样周期0错误)，SD卡格式化后持久挂载，断电重启RTC不丢时间 |
 | P3 | 联网时钟天气：WiFi+NTP+mDNS+和风天气 ✅已完成并真机验证 | 显示正确本地时间与指定城市天气(bridge日志确认ESP32多次成功轮询`/api/weather`拿到200，`page_weather`展示"阴/东风0级/29℃/89%"等真实数据) |
 | P4 | Claude额度显示：Mac桥接服务+ESP32轮询+额度页面 ✅已完成并真机验证 | 屏幕数字与手动核对吻合(bridge日志确认ESP32多次成功轮询`/api/quota/compact`拿到200) |
-| R0 | 架构治理：`app_runtime`、`sys_state`、`input_manager`、深化 `storage_sd` | P0-P4 行为不退化；页面/按键/启动的遗留依赖不再扩大 |
+| R0 | 架构治理：`app_runtime`、`sys_state`、`input_manager`、深化 `storage_sd`、UI V2四页迁移 ✅已完成并真机验证 | 见上方"R0 完成记录"；固件+3,400字节(+0.3%)，quota/weather真机验证含bridge主动断开90s恢复场景 |
 | P5.0 | 云 API 与资源验证：SiliconFlow ASR/TTS、SiliconFlow/DeepSeek LLM、SSE/Tools | 两个 LLM Adapter 可配置切换；失败、取消、限流可释放资源 |
 | P5.1-P5.2 | 语音链路：音频、ESP-SR、Wake/VAD/ASR/LLM/TTS | 唤醒可靠，单轮问答闭环完整 |
 | P6.0-P6.1 | 板载 agent：Pi 风格 loop、本地工具、SD 会话、Web/Skills | 工具权限和上下文预算可控；外部网页不能越权 |

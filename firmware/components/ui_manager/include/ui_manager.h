@@ -8,19 +8,22 @@ extern "C" {
 #endif
 
 /*
- * 页面导航与渲染调度。
+ * 页面导航与渲染调度。GPIO消抖/长短按判定归 input_manager 所有，本模块只消费
+ * 其发布的语义事件(NEXT/ACTION/BACK/VOICE)，不读取GPIO。
  *
  * 交互约定:
- *   KEY 短按       -> 切换到下一页
- *   BOOT 短按      -> UI_KEY_ACTION 下发给当前页
- *   BOOT 长按(1s)  -> UI_KEY_BACK   下发给当前页
+ *   NEXT (KEY短按)   -> 切换到下一页
+ *   ACTION (BOOT短按) -> UI_KEY_ACTION 下发给当前页
+ *   BACK (BOOT长按)   -> UI_KEY_BACK   下发给当前页
+ *   VOICE (KEY长按)   -> R0未接语音，仅短暂提示，不改变当前页面(P5实现)
  *
- * 任务: ui_task, 栈4096, 优先级5 (登记于 docs/coding-standards.md 第6节)
+ * 任务: ui_task, 栈4096, 优先级5 (登记于 docs/coding-standards.md 第7节)
  */
 
 #define UI_MAX_PAGES 8
 
-/* 依赖 board_init() 与 st7305_init() 已完成 */
+/* 依赖 board_init()、st7305_init() 已完成；内部会向 input_manager 注册事件回调，
+ * 调用顺序与 input_manager_init() 无先后要求(回调注册前触发的事件会被忽略) */
 esp_err_t ui_manager_init(void);
 
 /* 注册页面。page 必须是静态生命周期。按注册顺序循环切换 */

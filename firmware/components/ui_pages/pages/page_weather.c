@@ -4,21 +4,25 @@
 
 #include "display_st7305.h"
 #include "esp_log.h"
+#include "sys_state.h"
+#include "ui_icons.h"
 #include "ui_pages.h"
-#include "weather_client.h"
+#include "ui_v2.h"
 
 /*
- * 天气页: 展示和风天气(QWeather)当前实况。数据经 weather_client 后台轮询
- * 官方HTTPS接口获取(15分钟一次)，本页不直接发HTTP请求(规范第5节)。
+ * 天气页(天气海报)：温度和天气图形构成主要识别。只读取 sys_state 快照，
+ * 不直接轮询天气服务(规范第6节)。
  *
- * 城市固定为常州·武进(对应 secrets.h 里的 QWEATHER_LOCATION)，纯展示用途，
- * 换城市需同步改这里的 CITY_NAME 和 secrets.h 的 LocationID。
+ * 城市固定为常州·武进(对应 secrets.h 里桥接服务侧的 QWeather LocationID)，
+ * 纯展示用途；weather_client 通过 bridge/server.py 代理获取天气数据，
+ * 详见 docs/CLAUDE.md "P3 天气代理"一节。
  *
- * 布局(400×300):
- *   外框 2px
- *   标题栏      y=6..40    城市名 + 数据新鲜度/降级提示
- *   天气内容    y=64..248  大字温度 + 现象文字 + 湿度/风力
- *   底部提示    y=264
+ * 布局(400×300，UI V2共享页头/页脚见 ui_v2.h):
+ *   页头        y=0..34    城市名 + SD/WiFi/电池图标
+ *   新鲜度/旧数据徽标  y=44
+ *   温度+图标   y=90..160  大字温度(左) + 天气图标/现象(右)
+ *   三列摘要    y=210      湿度 | 风 | 数据状态
+ *   页脚        y=266..    KEY/VOICE/BOOT提示
  */
 
 static const char *TAG = "page_weather";
@@ -30,47 +34,50 @@ static int s_tick = 0;
 
 static void draw(void)
 {
+    sys_state_snapshot_t snap;
+    sys_state_get_snapshot(&snap);
+
     st7305_clear(false);
-    st7305_draw_rect(2, 2, 396, 296, 1, true);
+    ui_v2_draw_header(CITY_NAME, &snap);
 
-    weather_now_t w;
-    bool has_data = weather_client_get(&w);
-
-    st7305_draw_utf8(20, 6, 2, CITY_NAME, true);
+    bool has_data = snap.weather_updated_at != 0;
+    bool stale = has_data && !snap.weather_available;
 
     char sub[32];
     if (!has_data) {
-        snprintf(sub, sizeof(sub), "等待首次获取...");
-    } else if (!w.available) {
-        snprintf(sub, sizeof(sub), "天气接口不可达");
+        snprintf(sub, sizeof(sub), "首次数据获取中");
+    } else if (stale) {
+        snprintf(sub, sizeof(sub), "旧数据");
     } else {
-        long age = (long)(time(NULL) - w.fetched_at);
-        snprintf(sub, sizeof(sub), "数据于%ld分钟前", (age < 0 ? 0 : age) / 60);
+        long age = (long)(snap.now - snap.weather_updated_at);
+        snprintf(sub, sizeof(sub), "%ld分钟前", (age < 0 ? 0 : age) / 60);
     }
-    st7305_draw_utf8(20, 40, 1, sub, true);
-    st7305_fill_rect(20, 58, 360, 1, true);
+    st7305_draw_utf8(400 - 20 - st7305_utf8_width(1, sub), 44, 1, sub, true);
 
-    if (has_data && w.available) {
+    if (has_data) {
         char temp_buf[8];
-        snprintf(temp_buf, sizeof(temp_buf), "%.0f", w.temperature);
-        st7305_draw_text(40, 90, 6, temp_buf, true);
+        snprintf(temp_buf, sizeof(temp_buf), "%.0f", snap.weather_temperature);
+        st7305_draw_text(20, 90, 6, temp_buf, true);
         int tw = 8 * 6 * (int)strlen(temp_buf);
-        st7305_draw_utf8(40 + tw + 8, 96, 2, "C", true);
+        st7305_draw_utf8(20 + tw + 8, 96, 2, "C", true);
 
-        st7305_draw_utf8(230, 100, 2, w.condition, true);
+        icon_weather(260, 80, snap.weather_condition);
+        st7305_draw_utf8(260 + (40 - st7305_utf8_width(1, snap.weather_condition)) / 2, 126, 1,
+                         snap.weather_condition, true);
 
-        char line[64];
-        snprintf(line, sizeof(line), "湿度%d%%  %s", w.humidity, w.wind);
-        st7305_draw_utf8(40, 190, 1, line, true);
+        char humidity_col[16], wind_col[48], status_col[16];
+        snprintf(humidity_col, sizeof(humidity_col), "湿度 %d%%", snap.weather_humidity);
+        snprintf(wind_col, sizeof(wind_col), "风 %s", snap.weather_wind);
+        snprintf(status_col, sizeof(status_col), "数据 %s", stale ? "旧" : "正常");
+
+        st7305_draw_utf8(20, 210, 1, humidity_col, true);
+        st7305_draw_utf8(160, 210, 1, wind_col, true);
+        st7305_draw_utf8(320, 210, 1, status_col, true);
     } else {
-        st7305_draw_round_rect(20, 64, 360, 184, 8, true);
-        const char *msg = has_data ? "无法连接天气服务，稍后自动重试" : "首次数据获取中，请稍候";
-        st7305_draw_utf8(20 + (360 - st7305_utf8_width(1, msg)) / 2, 152, 1, msg, true);
+        ui_v2_draw_empty_state(120, "正在获取", "首次连接桥接服务中");
     }
 
-    st7305_fill_rect(20, 256, 360, 1, true);
-    const char *hint = "KEY 切换页面";
-    st7305_draw_utf8((400 - st7305_utf8_width(1, hint)) / 2, 264, 1, hint, true);
+    ui_v2_draw_footer("刷新");
 
     esp_err_t err = st7305_flush();
     if (err != ESP_OK) {

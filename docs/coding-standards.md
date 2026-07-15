@@ -4,7 +4,7 @@
 
 ## 1. 目标架构：少量深 Module，依赖方向清晰
 
-P0-P4 的页面、轮询服务和启动代码已经可用，但不足以直接承载语音、agent、SD 长期记忆和流式网络。P5 起新增功能按以下目标架构落位；R0 逐步迁移旧页面，不要求为整理文档而重写已验证功能。
+P0-P4 的页面、轮询服务和启动代码曾经能用但架构欠账；R0 已经把它们迁移到下面这套目标架构，不是规划中的将来时。P5 起新增功能必须落在对应 Module，不得为图省事重新引入直接依赖。
 
 ```text
 main/app_main.c
@@ -30,7 +30,7 @@ app_runtime                 启动顺序、功能注册、降级策略
 - `board_rlcd42`、显示、音频、网络、SD 等平台 Module 不得依赖 UI、语音、agent 或业务 Module。
 - 违反依赖方向说明 Module 归属错误：调整 Module 或把交互收敛到 `sys_state`，不得开临时 include 后门。
 
-**迁移约束：**当前 `ui_pages` 对传感器、电池、网络和 SD 的直接读取是 P0-P4 遗留实现。R0 迁移前允许维持既有行为；从本规则生效起，新增页面和新增页面数据不得扩大这种依赖，迁移时优先处理首页和状态栏。
+**R0 已完成**：`ui_pages` 四个页面(`page_home`/`page_env_monitor`/`page_quota`/`page_weather`)已全部迁移为只读 `sys_state` 快照，不再直接依赖传感器/电池/网络/SD/服务层组件；`page_diag.c` 保留但已从 `ui_manager` 注册中移除，只作为"旧式直读页面"的反面参照，不要照抄它的模式。新增页面从第一天起就必须走 `sys_state`。
 
 ## 2. Module Interface、深度与 seam
 
@@ -139,10 +139,12 @@ typedef struct {
 | 任务 | 栈 | 优先级 | 组件 |
 |---|---|---|---|
 | main_task | 默认 | 1 | app_main（启动后即退出） |
-| ui_task | 4096 | 5 | ui_manager（当前 30ms 轮询按键、1s 页面 tick；R0 迁走按键） |
-| env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV） |
-| claude_quota_task | 4096 | 3 | claude_quota_client（60s轮询Mac桥接服务，mDNS+HTTP+cJSON解析） |
-| weather_task | 4096 | 3 | weather_client（15分钟轮询Mac桥接服务，mDNS+HTTP+cJSON解析） |
+| input_task | 2048 | 4 | input_manager（30ms轮询KEY/BOOT，消抖+长短按判定） |
+| ui_task | 4096 | 5 | ui_manager（消费input_manager语义事件；无输入时1s周期tick） |
+| sys_state_task | 3072 | 2 | sys_state（10s轮询瞬时温湿度/电池/WiFi/SD状态，写入共享快照） |
+| env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV，同步推送sys_state） |
+| claude_quota_task | 4096 | 3 | claude_quota_client（60s轮询Mac桥接服务，mDNS+HTTP+cJSON解析，推送sys_state） |
+| weather_task | 4096 | 3 | weather_client（15分钟轮询Mac桥接服务，mDNS+HTTP+cJSON解析，推送sys_state） |
 | *(后续新增在此登记)* | | | |
 
 ## 8. 云端与持久化约定
