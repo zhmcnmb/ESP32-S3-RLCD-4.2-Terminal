@@ -1,10 +1,10 @@
 # CLAUDE.md
 
-**写代码前必读 [`docs/coding-standards.md`](docs/coding-standards.md)** —— 分层依赖规则、文件体积红线、错误处理、页面 Interface 契约都是强制约定。硬件引脚的唯一权威来源是 [`docs/hardware-pinmap.md`](docs/hardware-pinmap.md)。P5-P8 的功能取舍、板载记忆和验收路线以 [`docs/voice-agent-design.md`](docs/voice-agent-design.md) 为准；R0 架构迁移和现有四页改版以 [`docs/r0-ui-v2-spec.md`](docs/r0-ui-v2-spec.md) 为准。
+**写代码前必读 [`docs/coding-standards.md`](docs/coding-standards.md)** —— 分层依赖规则、错误处理、页面 Interface 和极简 UI 规则都是强制约定。硬件引脚的唯一权威来源是 [`docs/hardware-pinmap.md`](docs/hardware-pinmap.md)。P5-P8、Jarvis 页面、板载记忆和验收路线以 [`docs/voice-agent-design.md`](docs/voice-agent-design.md) 为准。
 
 ## 项目是什么
 
-Waveshare ESP32-S3-RLCD-4.2 开发板固件，目标是打造一个桌面终端，集成：低功耗时钟+天气、语音交互(唤醒词+LLM对话)、环境监测记录(温湿度+SD打点)、Claude Code用量额度显示，并逐步升级为 agent runtime、会话、长期记忆和任务调度都运行在开发板上的个人智能体。模型计算允许使用 SiliconFlow 和 DeepSeek API。
+Waveshare ESP32-S3-RLCD-4.2 开发板固件，目标是打造一个拥有专属头像的个人 Jarvis 智能体。agent runtime、会话、记忆、任务和 UI 尽量全部运行在开发板，模型计算允许设备直连 SiliconFlow/DeepSeek API；正式产品不依赖 Mac 常驻。
 
 ## 框架选型：ESP-IDF（非Arduino）
 
@@ -33,11 +33,11 @@ P5起新增功能继续遵守这条依赖方向，不要为语音/agent开临时
 |---|---|
 | `board_rlcd42` | 唯一的引脚定义与总线init(I2C/SPI/按键)，暴露handle与I2C扫描 |
 | `display_st7305` | ST7305反射屏驱动：1bpp帧缓冲、画点/矩形、ASCII 8×8字体、**中文16×16字库(UTF-8混排)** |
-| `input_manager` | KEY/BOOT消抖+长短按判定，唯一GPIO输入所有者，发布NEXT/ACTION/BACK/VOICE语义事件 |
+| `input_manager` | KEY/BOOT输入所有者；当前实现仍发布VOICE占位事件，P5.2删除用户可见占位并补稳定状态消抖 |
 | `sys_state` | 状态快照聚合：时间/瞬时温湿度/电池/WiFi/SD由内部轮询任务采集，环境历史/天气/额度由对应Producer推送；`sys_state_get_snapshot()`一次性一致读取 |
 | `app_runtime` | 启动编排：硬件init→可选服务→UI注册→异步联网，接管原`app_main.c`全部业务逻辑，密钥经`app_runtime_config_t`传入(不直接依赖`secrets.h`避免组件循环依赖) |
 | `ui_manager` | 页面注册、导航、tick调度（`ui_task`）；只消费`input_manager`语义事件，不读GPIO |
-| `ui_pages` | `page_home`(桌面时钟+温湿度摘要)、`page_env_monitor`(温湿度趋势)、`page_quota`(Claude用量5h/7d)、`page_weather`(和风天气实况)，均只读`sys_state`快照(UI V2布局，见`docs/r0-ui-v2-spec.md`)。内部私有视觉原语`ui_v2.h/c`(共享页头/页脚/分隔线/空状态)与`ui_icons.h/c`(状态/天气图标)不对外暴露。`page_diag`(硬件自检)已从注册中移除，文件保留作为**旧式直读页面参照范例** |
+| `ui_pages` | 当前四页均只读`sys_state`；旧 UI V2 的共享页头/文字页脚因实机反馈过于冗余，P5.2 按长期设计第9节改为极简 Jarvis 风格。`page_quota`继续保留，但Mac离线只允许该页降级；`page_diag`是旧式直读诊断页，不能作为模板 |
 | `sensor_shtc3` | SHTC3温湿度读取，内部互斥锁防多任务并发 |
 | `rtc_pcf85063` | RTC读写(BCD转换)、掉电检测。**符号必须用全前缀**，见Gotchas |
 | `net_manager` | WiFi STA连接、断线自动重连(慢速重试用`esp_timer`单次定时器，事件回调不阻塞)；`net_manager_register_connected_cb()`供首次GOT_IP一次性回调(SNTP启动用) |
@@ -57,35 +57,36 @@ P5起新增功能继续遵守这条依赖方向，不要为语音/agent开临时
 | Component | 职责 | Phase |
 |---|---|---|
 | `audio_pipeline` / `wakeword` / `voice_assistant` | ES8311/ES7210音频、ESP-SR唤醒、一轮语音编排与取消 | P5.1 |
+| `page_jarvis` | 默认智能体页面；原创机械面甲风专属头像和 agent 状态的唯一视觉出口，可借鉴变形金刚式结构感但不照搬角色 | P5.2 |
 | `agent_runtime` / `agent_session` / `agent_tool_registry` | Pi 风格消息/工具循环、SD 会话、工具权限与输出预算 | P6.0 |
 | `memory_engine` / `scheduler` | 板载长期记忆与持久任务；数据、检索、维护全部在 SD/设备端 | P6.2/P6.3 |
 
 **中文字库**：`tools/charset.txt` 维护字符集 → `python3 tools/gen_font.py` 生成 `font_cn16.c`。
-源码字符串字面量里的中文会被`gen_font.py`自动扫描收录，**新增文案后只需重跑脚本**；只有运行时才出现、源码里没有字面量的文案(如天气API返回的现象词、风向)才需要手工写进`charset.txt`。缺字时屏幕显示空心框。当前244字约8.1KB(R0 UI V2改版新增13字)。
+源码字符串字面量里的中文会被`gen_font.py`自动扫描收录，**新增文案后只需重跑脚本**；只有运行时才出现、源码里没有字面量的文案(如天气API返回的现象词、风向)才需要手工写进`charset.txt`。缺字时屏幕显示空心框。P5.2 删除冗余文案后重新生成并记录体积。
 
 ## 架构分层规则（R0已落地，强制维持）
 
 `main → app_runtime → sys_state/input_manager/ui_manager+ui_pages/平台Module → board_rlcd42` 已经是当前代码的实际结构，不是待办。新代码必须遵守以下归属，不准开临时直读后门：
 
 - `app_main.c`(35行) 只做芯片诊断和把`secrets.h`装进`app_runtime_config_t`传给`app_runtime_start()`；不直接初始化/注册任何业务 Module(`app_runtime`不依赖`secrets.h`本身，避免`main`↔`app_runtime`组件循环依赖)。
-- 页面只调用一次 `sys_state_get_snapshot()` 取得整体一致快照、渲染；不能读传感器、电池、网络、SD，也不能自己起后台任务。R0尚未提供"post command"通道(现有4页BOOT ACTION都只是"用当前缓存重绘"，见`docs/r0-ui-v2-spec.md` Implementation Decisions)。
-- `input_manager` 是唯一 GPIO 输入所有者。KEY 短按 NEXT、长按 VOICE；BOOT 短按 ACTION、长按 BACK(语义由消费方按上下文解读为"返回"或"取消")；PWR 无固件行为。`input_manager`的回调只入队，真正的绘制/dispatch只在`ui_manager`自己的`ui_task`里发生，避免多任务竞争帧缓冲/SPI。
+- 页面只调用一次 `sys_state_get_snapshot()` 取得整体一致快照、渲染；不能读传感器、电池、网络、SD，也不能自己起后台任务。当前四页 BOOT ACTION 只是重画缓存，不是真实刷新，P5.2 删除该入口和文案。
+- `input_manager` 是唯一 GPIO 输入所有者。KEY 产品行为只保留短按 NEXT；WakeNet 是默认语音入口，不显示未接入的长按说话。BOOT 只在真实页面动作或 agent 确认/取消上下文使用；PWR 无固件行为。
 - `storage_sd` 深化后 Interface = `append`/`read_chunk`/`atomic_replace`/`checkpoint`，内部互斥锁串行化+路径校验(拒绝`..`和绝对路径)；调用方只用相对路径，不接触 FATFS 细节。`checkpoint()`目前是空操作(当前所有写入都在单次调用内open+write+close，已经落盘)，留着Interface给未来批量写入模式用。
 - `cloud_transport` 隐藏 TLS/SSE/取消；`llm_provider` 仅因 SiliconFlow 与 DeepSeek 两个实际生产 Adapter 而存在。不要为 `memory_engine` 建立远程 provider。
 - `memory_engine` 保存、检索、遗忘和维护都在板端。LLM 只输出候选，设备验证 schema、来源、敏感信息、TTL 与最终落盘。
 
-**新增页面的做法**：在 `ui_pages/pages/` 下新建`page_xxx.c`，实现 `ui_page_t`，只读 `sys_state_snapshot_t`，复用`ui_v2.h`(共享页头/页脚/分隔线/空状态)和`ui_icons.h`(图标)，在 `ui_pages.h` 暴露 getter，由 `app_runtime` 注册。**不要改 ui_manager**，也不要从页面直读设备或网络；`page_diag.c`保留作为"旧式直读"反面参照(文件头注释已说明，不要照抄它的直读模式)。
+**新增页面的做法**：在 `ui_pages/pages/` 下新建`page_xxx.c`，实现 `ui_page_t`，只读 `sys_state_snapshot_t`，在 `ui_pages.h` 暴露 getter，由 `app_runtime` 注册。参考`page_home.c`的数据依赖方式，不照抄`page_diag.c`。共享绘图只保留被两个以上页面复用的私有原语，不建立通用布局框架。
 
-## R0 完成记录(架构治理 + UI V2)
+## R0 完成记录（架构治理保留，旧 UI 视觉废弃）
 
-范围：网络确定性修复 → `sys_state` → `input_manager` → `app_runtime` → `storage_sd`深化 → UI V2视觉原语 + 四页迁移，按`docs/r0-ui-v2-spec.md`第13节顺序实施，逐步真机验证(细节见该文档)。
+R0 已完成网络确定性修复、`sys_state`、`input_manager`、`app_runtime`、`storage_sd` 深化和四页快照迁移。架构成果继续使用；旧 UI V2 因实机反馈文字过多、缺少智能体身份，于 2026-07-16 被长期设计第9节替代。
 
-**完成标准核对**(对照`docs/r0-ui-v2-spec.md`第14节)：
+**架构完成标准核对：**
 - ✅ 四页均不再直接读取传感器/电池/网络/SD，只读`sys_state`快照(已用`grep`确认四个page_*.c不再include旧direct-read头文件)
 - ✅ `ui_manager`不再读GPIO/判长短按(GPIO消抖长短按已整体移到`input_manager`)
 - ✅ `app_main.c`不含业务Module初始化和页面注册细节(精简到35行，只做芯片诊断+调用`app_runtime_start()`)
 - ✅ WiFi事件回调不阻塞(`vTaskDelay`已替换为`esp_timer`单次定时器)；延迟联网SNTP能自动启动(`net_manager_register_connected_cb`，真机上多次真实断线重连场景都验证过)
-- ✅ 四页共用一致页头(标题+SD/WiFi/电池图标)/页脚(KEY/VOICE/BOOT提示)/空状态(`ui_v2.h`)
+- ⚠️ 四页共用页头/文字页脚已实现但产品方向不接受；P5.2 删除正常成功说明、VOICE占位、伪刷新和普通页脚，新增默认Jarvis头像页
 - ⚠️ **无法远程验证**：四页在1米正常室内光线下的实际可读性、KEY/BOOT物理按键手势——本次由AI agent远程完成，没有摄像头/机械臂访问屏幕和按键；已用Python/PIL按真实坐标渲染四页布局mockup做视觉复核(无重叠/越界)，`input_manager`的GPIO持续轮询数分钟无故障，但**建议用户拿到实机后做一次目视确认+物理按键测试**作为最终验收
 - ✅ 页面内容未变化时不做无意义整屏flush：quota/weather保持原有10s节流重绘(避免真机上每秒闪烁)，`env_monitor`保持30s节流；首页每秒刷新是有意为之(时钟本身每秒变化，不算无意义)
 - ✅ P0-P4数据含义、页面顺序、BOOT刷新行为未退化：真机上quota/weather仍能通过bridge成功轮询拿到200，且额外测试了bridge主动关闭90秒+恢复的场景，`claude_quota_client`按预期报`ESP_ERR_HTTP_CONNECT`降级、bridge恢复后静默恢复正常轮询
@@ -103,7 +104,9 @@ P5起新增功能继续遵守这条依赖方向，不要为语音/agent开临时
 
 体积增量小的原因：R0大部分工作是把已有逻辑重新组织到新的Module边界(app_main→app_runtime、ui_manager内联GPIO→input_manager)，真正新增的代码(sys_state聚合/锁、storage_sd互斥+路径校验、UI V2页头页脚/天气图标)体量都不大。`esp_get_free_heap_size()`+`heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM)`诊断已加进`app_runtime`启动完成日志，后续阶段可直接对比。**per-task栈高水位未采集**(需要开`CONFIG_FREERTOS_USE_TRACE_FACILITY`才能用`vTaskList()`，本次判断非阻塞性收益暂缓，留给P5.0做资源验证时一并开启)。
 
-## P4 用量数据源（重要设计决定）
+## P4 Claude 用量（保留的可选 Mac 增强）
+
+该能力依赖 Mac 上的 `omp` 登录态，暂时没有可由设备安全直连的等价数据源，因此保留 `page_quota` 和 bridge。隔离原则：Mac 不在线时只影响额度页，bridge 不得成为语音、agent、记忆、任务、天气或环境功能的依赖。
 
 **开发环境本机用的是 OMP 框架（`omp` CLI）跑 Claude 订阅，不是官方 `claude` CLI**，因此`bridge/`原计划"解析`~/.claude/projects/**/*.jsonl`做近似估算"的方案**已废弃**。
 
@@ -302,10 +305,10 @@ P5.1真机验证细节见上方"P5.1 完成记录"；DeepSeek验证情况与P5.0
 | P2 | 环境监测MVP：RTC+SHTC3+SD打点+趋势页面 ✅已完成并真机验证 | CSV持续写入(2个采样周期0错误)，SD卡格式化后持久挂载，断电重启RTC不丢时间 |
 | P3 | 联网时钟天气：WiFi+NTP+mDNS+和风天气 ✅已完成并真机验证 | 显示正确本地时间与指定城市天气(bridge日志确认ESP32多次成功轮询`/api/weather`拿到200，`page_weather`展示"阴/东风0级/29℃/89%"等真实数据) |
 | P4 | Claude额度显示：Mac桥接服务+ESP32轮询+额度页面 ✅已完成并真机验证 | 屏幕数字与手动核对吻合(bridge日志确认ESP32多次成功轮询`/api/quota/compact`拿到200) |
-| R0 | 架构治理：`app_runtime`、`sys_state`、`input_manager`、深化 `storage_sd`、UI V2四页迁移 ✅已完成并真机验证 | 见上方"R0 完成记录"；固件+3,400字节(+0.3%)，quota/weather真机验证含bridge主动断开90s恢复场景 |
+| R0 | 架构治理：`app_runtime`、`sys_state`、`input_manager`、深化 `storage_sd`、四页快照迁移 ✅已完成 | 架构保留；旧 UI V2 视觉规范已废弃 |
 | P5.0 | 云 API 与资源验证：SiliconFlow ASR/TTS、SiliconFlow/DeepSeek LLM、SSE/Tools ✅已完成并真机验证(DeepSeek因API Key暂缺仅完成编译验证) | 见下方"P5.0 完成记录" |
 | P5.1 | 本地音频链路：`audio_pipeline`(ES7210/ES8311)、`wakeword`(ESP-SR AFE/WakeNet/VAD) ✅已完成并真机验证(2026-07-16，真实唤醒词5次连续触发+WAV写入成功，修复死空气缓冲bug)，播放爆音待用户下次确认 | 见上方"P5.1 完成记录" |
-| P5.2 | 单轮语音问答：Wake→ASR→Chat→TTS完整闭环 | 唤醒可靠，单轮问答闭环完整 |
+| P5.2 | Jarvis 单轮闭环：清理冗余UI、默认头像页、`voice_assistant`、Wake→ASR→Chat→TTS、删除P5.1自检 | 20轮闭环；状态可见；断网恢复；正式设备不依赖Mac |
 | P6.0-P6.1 | 板载 agent：Pi 风格 loop、本地工具、SD 会话、Web/Skills | 工具权限和上下文预算可控；外部网页不能越权 |
 | P6.2-P6.3 | 个人智能体：板载记忆、提醒/cron，按需接 HA 或 Telegram | 记忆可重建、可删除；掉电任务不重复执行 |
 | P7-P8 | 可选 Companion 与产品化：仅重型能力、稳定性、OTA、安全 | Companion 断开不影响 L1-L4；长期运行稳定 |

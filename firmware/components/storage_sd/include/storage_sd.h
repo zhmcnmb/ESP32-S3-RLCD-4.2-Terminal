@@ -17,7 +17,7 @@ extern "C" {
  * 卡未插入时 storage_sd_init() 返回错误但不影响系统运行——
  * SD卡是可选外设，调用方应降级处理而非中止启动。
  *
- * 深化后的Interface(r0-ui-v2-spec.md "storage_sd 深化"): append、stream
+ * 持久化 Interface：append、stream
  * read、atomic replace、checkpoint。内部持一把互斥锁串行化所有文件操作，
  * 调用方不需要（也不应该）自己给FATFS访问加锁；rel_path一律校验拒绝
  * ".."和绝对路径，防止越界写到挂载点之外。后续录音/会话/Skill/长期记忆

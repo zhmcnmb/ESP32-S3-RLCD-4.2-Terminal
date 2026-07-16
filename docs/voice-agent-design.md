@@ -20,7 +20,7 @@
 | 当前会话 | SD 卡 JSONL，断网可用 |
 | 长期记忆 | 板载 `memory_engine`；数据、索引、召回、遗忘与维护全部在 SD 卡 |
 | 扩展 | 固件 Tool、SD 声明式 Skill、远程 Capability adapter |
-| Mac bridge | 不参与新增语音主链路，仅保留现有功能；后期可演进为可选 Companion |
+| Mac bridge | 保留 Claude 用量页；离线时只允许该页降级，P5-P8 核心不依赖 Mac |
 
 完整闭环：
 
@@ -29,7 +29,7 @@
         -> 本地工具 -> 云 LLM -> 云 TTS -> 本地扬声器
 ```
 
-这条链路不要求 Mac 常驻。现有天气和 Claude 用量页面仍按当前实现依赖 Mac `bridge`，本方案不顺带重构它们。
+这条链路不要求 Mac 常驻。天气已由开发板直连 QWeather；Claude 用量页因依赖本机 `omp` 登录态继续保留，但必须与 Jarvis 核心隔离。
 
 ## 2. Pi 的使用边界
 
@@ -67,7 +67,7 @@ Pi Package Gallery 是发现目录，不是安全审核目录。设备不得下�
 
 | 层级 | 能力 | 对外依赖 |
 |---|---|---|
-| L0 桌面终端 | 时钟、天气、环境、额度页面 | 现有 bridge |
+| L0 桌面终端 | Jarvis、时钟、天气、环境 | 天气 API；不依赖 Mac |
 | L1 语音终端 | 唤醒、ASR、普通问答、TTS | SiliconFlow；LLM 可用 DeepSeek |
 | L2 设备智能体 | Pi agent loop、本地工具、SD 会话 | SiliconFlow 或 DeepSeek LLM API |
 | L3 联网智能体 | Web Search、网页提取、SD Skills | 搜索/提取 API |
@@ -518,55 +518,73 @@ SQLite 在 ESP32-S3 + SDMMC 上可以通过第三方移植运行，但不作为�
 
 如果 n-gram 在真实评测中明显不足，可调用 SiliconFlow Embedding API 生成 128 维向量，在设备端归一化并量化为 int8 后只存 SD。检索仍由 ESP32 分块读取并做点积，首版不做 HNSW；向量文件必须记录 `model_id/dimension/normalization/quantization_version`。断网时停生成新向量并回退本地 n-gram，已有记忆仍可召回。DeepSeek API 当前只作为 LLM provider，不假设它提供 embedding。
 
-## 9. UI 与中文字库
+## 9. Jarvis 产品界面
 
-当前中文字库只包含源码中的静态文案，无法显示任意 ASR/LLM 中文。MVP 的语音页只显示固定状态：
+界面方向改为“极简现代科幻”，核心不是增加装饰，而是让设备像一个有身份的智能体：正常状态保持安静，异常和需要用户决策时才出现文字。2026-07-15 的 UI V2 共享页头/页脚方案已经落地，但实机反馈确认文字过多、所有页面过于相似，因此不再作为产品视觉规范。
 
-- 待机
-- 聆听
-- 识别
-- 思考
-- 执行
-- 播报
-- 网络不可用
+页面样式只定义产品原则，不在本阶段固定线框、坐标、头像结构、图标形状或具体排版。实现前先根据这些原则制作候选方案并以真机效果确认。
 
-完整转写和回答通过语音呈现。后续如需显示任意中文，再设计 SD 字库包和按码点索引读取，不把完整 CJK 字库编进 `font_cn16.c`。
+强制原则：
 
-### 9.1 三个物理按键的真实边界
+- 不显示“时间已校准”“连接正常”“数据正常”等成功说明；成功状态由内容本身表达。
+- 未接入功能不得显示入口、页脚提示或“待接入”占位。
+- 普通页面不常驻 KEY/BOOT 教程。
+- 正常状态不抢占内容空间，异常状态必须清楚但简短。
+- 每页优先表达一个核心信息，避免重复标题、说明和状态词。
+- 智能体状态集中在 `page_jarvis`，其他页面不复制头像和完整状态说明。
 
-板上有三个物理按键，但只有两个可由固件读取：
+### 9.1 产品页面顺序
 
-| 按键 | 硬件 | 长期映射 |
-|---|---|---|
-| KEY | GPIO18 | 短按下一页；长按手动唤醒/进入聆听 |
-| BOOT | GPIO0，低电平且是下载启动脚 | 短按页面动作/确认；长按返回/取消 |
-| PWR | 硬件电源开关，不接 GPIO | 只负责开关机，固件不能分配功能 |
+正式设备默认只注册以下页面：
 
-上下文规则：
+| 顺序 | 页面 | 核心内容 |
+|---:|---|---|
+| 1 | `page_jarvis` | 专属头像、JARVIS 标识、当前 agent 状态 |
+| 2 | `page_home` | 时间、日期、温湿度摘要 |
+| 3 | `page_weather` | 温度、天气、湿度和风 |
+| 4 | `page_env_monitor` | 当前环境与一小时趋势 |
+| 5 | `page_quota` | 可选 Claude 用量；Mac 离线时独立降级 |
 
-- 待机时 KEY 长按是唤醒词之外的可靠入口，适合嘈杂环境。
-- 智能体运行时 BOOT 长按统一取消 ASR、LLM、工具等待或 TTS。
-- 高风险工具等待确认时，BOOT 短按确认、BOOT 长按拒绝。
-- KEY 短按始终保留翻页，避免不同页面交互含义漂移。
-- 不实现双键组合，除非后续出现无法用现有手势表达的真实需求。
+Claude 用量依赖 Mac 上的 `omp` 登录态，暂时无法完全板端化，因此保留 `page_quota` 和 `bridge`。它是唯一允许依赖 Mac 的可选页面：Mac 离线时只显示简洁离线态，不得影响其他页面、语音、agent、记忆或任务。
 
-当前 `ui_manager` 直接轮询 GPIO，KEY 只按下沿触发，没有稳定时间消抖，也没有 KEY 长按。P5 基础治理阶段将手势识别移入 `input_manager` 深模块；UI 和 voice 模块只接收 `INPUT_NEXT/ACTION/BACK/VOICE/CANCEL` 等语义事件。BOOT 在上电复位时仍承担下载模式功能，不能要求用户开机时按住。
+### 9.2 Jarvis 专属页
 
-### 9.2 交互一致性
+`page_jarvis` 是开机默认页，也是语音和 agent 状态的唯一视觉出口。页面必须有可识别的专属头像，视觉语言可以借鉴变形金刚式机械面甲的结构感，强调对称、机械分区和智能核心气质，但不得照搬任何具体角色、徽标或现成脸型。头像的位置、比例和绘制方式不在本文固定，后续以候选方案和真机可读性决定。
 
-现有页面底部只提示 KEY 翻页，但 BOOT 短按实际上会刷新页面。后续统一 footer：
+页面至少能区分 IDLE、LISTENING、TRANSCRIBING、THINKING、EXECUTING、SPEAKING、CONFIRM、ERROR/OFFLINE。默认状态不显示多余说明；交互中只显示理解当前状态或完成确认所需的最短文字。状态变化时才重绘，不做持续无意义刷新。
 
-```text
-KEY 翻页 | 长按说话 | BOOT 操作
-```
+### 9.3 其他页面瘦身
 
-进入确认状态时临时替换为：
+- 首页删除“桌面”和“时间已校准”。时间正常时只显示时间、日期和环境摘要；仅在无有效时间时提示 `未校时`。
+- 天气页删除“数据正常”和重复更新时间，只在旧缓存或离线时显示 `旧`/`离线`。首次获取文案改为设备直连语义，不再提桥接服务。
+- 环境页删除“当前”“共 N 条采样”“60 分钟前到现在”等可由布局表达的重复词；保留温度、湿度、左右时间端点和必要范围。
+- 所有普通页面删除 `KEY 翻页 / 长按说话 / BOOT 刷新` 页脚。BOOT 当前只是重画缓存，不是真实刷新，不能继续展示该动作。
+- 页面进入时只允许一次首帧绘制；`ui_manager` 不得在 `on_enter()` 后立即再调用 `on_tick()` 造成双 flush。
+- 页面内容未变化时不 flush。首页是否保留秒数和刷新频率由真机稳定性决定。
 
-```text
-BOOT 确认 | 长按取消
-```
+### 9.4 物理按键
 
-页面不自行解释物理 GPIO，只根据语义输入和 agent 状态渲染提示。
+板上三个物理按键中只有两个可由固件读取：
+
+| 按键 | 当前产品行为 |
+|---|---|
+| KEY / GPIO18 | 短按下一页；长按暂不产生用户可见行为 |
+| BOOT / GPIO0 | 普通页面不占用；CONFIRM 时短按确认，agent 活动时长按取消 |
+| PWR | 硬件开关，不接 GPIO，不能分配固件功能 |
+
+语音入口使用已经真机验证的 WakeNet 唤醒词，不再保留尚未接入的“KEY 长按说话”占位。未来只有在嘈杂环境实测证明需要物理备用入口时，才重新评估 KEY 长按；在此之前删除 `INPUT_EVENT_VOICE` 的用户可见处理和“语音功能待接入”提示。
+
+### 9.5 字库与回答显示
+
+当前中文字库只包含源码静态文案，Jarvis 页只使用固定短状态，因此继续沿用生成式 16×16 字库。完整 ASR 转写和 LLM 回答仍以语音为主，不在 400×300 屏幕滚动长文本。后续如果确有查看历史的需求，再设计 SD 字库包和按码点读取，不提前引入完整 CJK 字库。
+
+### 9.6 UI 实施顺序
+
+1. P5.2A 清理错误反馈：删除正常成功说明、所有普通页脚、VOICE 占位、伪“刷新”动作和天气桥接旧文案；修复页面进入双 flush。
+2. P5.2B 新增 `page_jarvis` 和头像呈现能力，注册为默认页，并把 `voice_assistant` 状态写入 `sys_state`。
+3. P5.2C 将 WakeNet -> ASR -> LLM -> TTS 闭环接入 Jarvis 状态，删除 `p51_selftest`。
+4. P6.0 agent loop 接入后扩展 EXECUTING/CONFIRM 状态，不改变 `page_jarvis` 外部 Interface。
+5. 真机拍摄不同光照下的页面照片，以信息清晰度和状态辨识为验收；代码检查不能替代目视验收。
 
 ## 10. 密钥与安全
 
@@ -579,9 +597,9 @@ BOOT 确认 | 长按取消
 - HTTPS 不允许关闭证书校验。
 - 默认不保留录音；调试录音需要显式开关和自动过期。
 
-如果无法接受设备丢失后的密钥提取风险，可让 `bridge` 代持 Key。该模式只替换对应云 client 的请求目标，agent loop、SD 会话和长期记忆仍在设备。
+正式产品由设备直接持有低额度、可吊销的云 Key，不要求 Mac 代持。若未来确有企业级密钥代理需求，应使用独立部署且经过认证的 Gateway，不复用现有本地 `bridge`。
 
-现有 `bridge/server.py` 绑定 `0.0.0.0` 且没有认证，只适合当前局域网天气/额度读取；在加入远程工具或设备控制前，必须增加 Bearer/mTLS、请求大小限制和明确的网络暴露策略，或新建独立 Companion。不得直接把现有端口映射到公网。
+现有 `bridge/server.py` 绑定 `0.0.0.0` 且没有认证，只允许服务保留的 Claude 额度页。它不得承载 agent 工具、长期记忆或设备控制，也不得映射到公网；bridge 离线只能让额度页降级。
 
 网页、长期记忆和消息通道返回的文本都属于不可信外部数据。它们可以作为 tool result 供模型参考，但不能修改 system prompt、注册新工具、提升权限或跳过物理确认。
 
@@ -589,26 +607,28 @@ BOOT 确认 | 长按取消
 
 P0-P4 已真机验证，长期规划不推翻现有功能，但在叠加语音、TLS、搜索和记忆前应先偿还以下结构性问题。
 
-### 11.1 必须先修
+### 11.1 2026-07-16 最新审查：下一批必须处理
 
-| 优先级 | 现状与证据 | 优化方案 | 原因 |
-|---|---|---|---|
-| P0 | `net_manager.c` 在 WiFi 事件回调中 `vTaskDelay(10000)` | 用 timer/独立重连任务做慢速退避 | 默认 event loop 不能被阻塞 10 秒 |
-| P0 | SNTP 只在启动后 15 秒内连网成功时启动 | 订阅首次 `GOT_IP`，幂等启动 SNTP | 晚连网设备当前可能一直不校时 |
-| P0 | 规范依赖 `sys_state`，仓库却没有实现 | 先建立状态快照、命令、事件三个小 interface | 页面、工具、语音都需要统一状态 |
-| P0 | `app_main.c` 已 99 行，达到 100 行红线 | 提取 `app_runtime` 管理启动顺序和功能注册 | P5 无法继续向 main 堆初始化 |
-| P0 | KEY 无稳定时间消抖，KEY 长按未利用 | 抽出 `input_manager` | 语音、确认、取消需要一致输入语义 |
-
-### 11.2 P5 同期优化
-
-| 优先级 | 现状与证据 | 优化方案 |
+| 优先级 | 现状与证据 | 优化方向 |
 |---|---|---|
-| ~~P1~~ | ~~`page_home.c` 直接读 SHTC3/电池；`ui_pages` 依赖几乎所有业务模块~~ | 已被R0解决：四页(home/env_monitor/quota/weather)全部改读`sys_state` snapshot，`page_diag.c`保留为反面参照(未注册进`ui_manager`) |
-| P1 | `display_st7305.c` 445 行，超过 400 行红线 | 保持一个公共 interface，在模块内部拆 panel/draw/text 文件 |
-| ~~P1~~ | ~~weather/quota 重复 mDNS、HTTP 缓冲和解析骨架~~ | 已部分解决：`weather_client`已改设备直连QWeather(经`cloud_transport`)，不再和`claude_quota_client`共享mDNS+HTTP骨架；`claude_quota_client`仍自己实现，目前只有它一个消费方，暂不评估单独抽象 |
-| ~~P1~~ | ~~`storage_sd` 只有 append line，没有互斥、目录、流读、原子替换~~ | 已被R0解决：Interface深化为append/read_chunk/atomic_replace/checkpoint，内部互斥锁串行化+路径校验 |
-| ~~P1~~ | ~~weather 页面注释仍写"设备直连官方 HTTPS"，城市配置说明也已过时~~ | 已解决(且已经名副其实)：`weather_client`现在确实设备直连HTTPS，注释已同步 |
-| ~~P1~~ | ~~quota/weather getter 解锁后再次读共享字段~~ | 已解决：`claude_quota_client_get()`/`weather_client_get()`都改成锁内计算`has_data`再解锁返回 |
+| P0 | `sys_state` 轮询在 SHTC3/电池读取失败时仍把未初始化字段作为函数参数传递 | 结构体先清零，或只在成功分支读取字段 |
+| P0 | `page_home` 显示“时间已校准”，所有页面常驻“长按说话/BOOT刷新”，但 VOICE 未接入、BOOT 只重画缓存 | 删除成功说明、普通页脚、VOICE 占位和伪刷新动作 |
+| P0 | `p51_selftest` 仍在正式入口启动 | P5.2 用 `voice_assistant` 替换并删除临时自检文件 |
+| P1 | `ui_manager` 进入页面后先调用 `on_enter()`，又立即调用 `on_tick()` | 页面进入只绘制一次，避免连续两次全屏 flush |
+| P1 | `input_manager` 只有 30ms 轮询，没有“连续稳定 N 次”消抖 | 增加稳定状态计数；KEY 长按在无真实需求时不发布用户事件 |
+| P1 | 天气首次获取仍提示“连接桥接服务”，实际已经设备直连 QWeather | 改成无供应商的短状态，正常时不显示 |
+| P1 | `app_runtime` 内部使用 `ESP_ERROR_CHECK`，与“只有 app_main 决定整机重启”的错误 Interface 冲突 | `app_runtime_start()` 返回不可恢复错误，由 `app_main` 唯一处理 |
+| P1 | `display_st7305.c` 超过 400 行红线 | 保持一个公共 Interface，在 Module 内拆 panel/draw/text 文件 |
+| P1 | 默认导航没有个人智能体身份页 | P5.2 新增 `page_jarvis` 并设为默认页 |
+
+### 11.2 已解决的结构问题
+
+- WiFi 慢速重试已改为 `esp_timer`，事件回调不再阻塞。
+- 首次 `GOT_IP` 已能幂等启动 SNTP，延迟联网不再漏校时。
+- `app_runtime`、`sys_state`、`input_manager` 和深化后的 `storage_sd` 已落地。
+- 四个业务页面已改为只读 `sys_state` 快照。
+- 天气已通过 `cloud_transport` 由设备直连 QWeather，不再依赖 Mac。
+- `llm_provider`、ASR、TTS、WakeNet、AFE 和 VAD 已完成 P5.0/P5.1 验证。
 
 ### 11.3 后续产品化优化
 
@@ -623,17 +643,9 @@ P0-P4 已真机验证，长期规划不推翻现有功能，但在叠加语音�
 
 ## 12. 长期实施顺序
 
-### R0 基础治理
+### R0 基础治理 ✅已完成
 
-范围：
-
-1. 修复 WiFi event loop 阻塞和延迟联网不启动 SNTP。
-2. 实现 `app_runtime`、`sys_state`、`input_manager`。
-3. 深化 `storage_sd`，拆分显示模块内部文件。
-4. 为 JSON/SSE、agent loop、input gesture 和 `memory_engine` 建立可测试 interface。
-5. 记录 P0-P4 行为基线，逐项回归真机页面。
-
-退出条件：P0-P4 行为不退化；`app_main.c` 回到充足余量；页面不再直接读传感器；两个按键手势稳定。
+已完成 WiFi 事件修复、延迟联网校时、`app_runtime`、`sys_state`、`input_manager`、`storage_sd` 深化和四页快照迁移。旧 UI V2 视觉规范因实机反馈文字过多而废弃；架构成果保留，视觉层按第 9 节重新实现。
 
 ### P5.0 云 API 与资源验证 ✅已完成并真机验证(2026-07-15，详见CLAUDE.md"P5.0 完成记录")
 
@@ -673,11 +685,16 @@ USB-Serial-JTAG调试接口)halt两个CPU核心直接检查FreeRTOS任务状态�
 固件是否卡死是两件独立的事，也与P5.1代码内容无关(对照实验：纯P5.0固件同样复现)，
 详见CLAUDE.md"已知风险"。
 
-### P5.2 单轮语音问答
+### P5.2 Jarvis 单轮语音闭环
 
-连接 `Wake -> ASR -> 单轮 Chat -> TTS`，加入语音状态页和网络降级。
+1. 先修复 11.1 的确定性问题，删除冗余 UI 文案、VOICE 占位和伪刷新动作。
+2. 新增默认 `page_jarvis`，用矢量头像显示 IDLE/LISTENING/THINKING/SPEAKING/ERROR。
+3. 实现 `voice_assistant`，连接 `Wake -> ASR -> 单轮 Chat -> TTS`，所有异步回调携带 `turn_id`。
+4. 将 voice 状态写入 `sys_state`，Jarvis 页只读快照；删除 `p51_selftest`。
+5. 断网时保留 Jarvis、时钟、环境和本地状态，头像进入离线态，不弹窗、不重启。
+6. 保留 Claude 用量页，但验证关闭 Mac bridge 后只有该页降级，其余功能完整可用。
 
-验收：普通问答连续 20 轮；断网不重启、不死锁，恢复后可再次唤醒。
+验收：普通问答连续 20 轮；唤醒到状态切换可见；TTS 可取消；断网不重启、不死锁，恢复后可再次唤醒；普通页面无未接入功能提示和冗余成功说明。
 
 ### P6.0 设备端智能体
 
@@ -709,22 +726,22 @@ USB-Serial-JTAG调试接口)halt两个CPU核心直接检查FreeRTOS任务状态�
 ### P6.3 主动助手
 
 1. 实现 once/interval/cron 持久任务、重启恢复和 missed-run policy。
-2. KEY 长按手动唤醒，BOOT 确认/取消。
+2. BOOT 确认/取消；语音入口默认使用 WakeNet，不预设 KEY 长按。
 3. 加入备忘、检索、计时器。
 4. 根据真实需求二选一接入 Home Assistant 或 Telegram，不同时做两条通道。
 
 验收：提醒任务掉电重启后仍存在且不会重复执行；高风险 HA 操作必须确认；消息通道完成配对、去重和会话隔离。
 
-### P7 可选 Companion 增强
+### P7 可选远程增强（当前暂停）
 
-只有出现明确需求才部署 NAS/树莓派/VPS Companion：
+当前产品目标是不依赖 Mac、NAS 或树莓派常驻。只有开发板资源无法完成且用户明确需要时，才重新评估远程增强：
 
 - 云 Browser：JavaScript、登录、点击、截图。
 - 固定白名单 HTTP MCP；完整 stdio MCP 留在 Companion。
 - Python/shell、子智能体和多平台 Gateway。
 - 统一代持不希望落在设备的第三方 Key。
 
-ESP32 仍是身份、权限、会话和任务的权威，Companion 只是远程工具执行器。断开 Companion 不得破坏 L1-L4 核心能力。
+ESP32 仍是身份、权限、会话、记忆和任务的权威。任何远程增强都只能是可删除 Adapter，断开后不得破坏 L1-L4 核心能力。
 
 ### P8 产品化与升级
 
@@ -761,7 +778,7 @@ ESP32 仍是身份、权限、会话和任务的权威，Companion 只是远程�
 | TLS、ESP-SR 导致 app 超过 4MB | P5.0 实测，必要时再调整分区 |
 | 上下文和 cJSON 导致 OOM | 最近轮次、请求字节上限、增量解析 |
 | SD 掉电损坏尾记录或索引 | JSONL、CRC、A/B manifest、索引可重建 |
-| API Key 落在设备 | 加密 NVS、低额度 Key、可选 bridge 代理 |
+| API Key 落在设备 | 加密 NVS、Flash Encryption、低额度且可吊销的独立 Key |
 | 任意中文无法显示 | MVP 固定状态，后续 SD 字库 |
 | 中文 n-gram 索引膨胀 | 只索引提炼记忆/摘要，限制 gram 和候选数，分代压缩 |
 | 自动提炼写入错误记忆 | LLM 只提议；本机 schema、来源、置信度、纠正覆盖 |

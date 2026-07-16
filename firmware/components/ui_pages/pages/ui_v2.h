@@ -4,7 +4,7 @@
 
 /*
  * UI V2 共享视觉原语：页头/页脚/分隔线/空状态。只在 ui_pages 内部使用，
- * 不对外暴露(docs/r0-ui-v2-spec.md 第6节共享页面骨架)。
+ * 不对外暴露。该视觉方案将在 P5.2 按 docs/voice-agent-design.md 第9节收敛。
  * 四个已迁移页面(home/env_monitor/quota/weather)统一调用这几个函数，
  * 只有主体内容(y=44..247)各自实现，保证页头/页脚/状态图标位置一致。
  */
