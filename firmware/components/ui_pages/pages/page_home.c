@@ -49,7 +49,7 @@ static void draw_time_section(const struct tm *t, const sys_state_snapshot_t *sn
         const char *ok = "时间已校准";
         st7305_draw_utf8((400 - st7305_utf8_width(1, ok)) / 2, 148, 1, ok, true);
     } else {
-        /* 校时异常用反白短徽标，不用长警告句(规范: r0-ui-v2-spec.md 第7节) */
+        /* 校时异常用反白短徽标，正常状态不显示解释性文案。 */
         const char *bad = "未校时";
         int bw = st7305_utf8_width(1, bad);
         int bx = (400 - (bw + 16)) / 2;

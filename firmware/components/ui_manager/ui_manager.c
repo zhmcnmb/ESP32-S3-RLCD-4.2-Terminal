@@ -85,8 +85,8 @@ static void dispatch_input(input_event_t evt)
     }
 }
 
-/* input_manager 的回调只做入队，绝不在 input_task 上下文里直接绘制
- * (r0-ui-v2-spec.md 第4节: 输入状态变化不得直接调用页面绘制) */
+/* input_manager 的回调只做入队，绝不在 input_task 上下文里直接绘制，
+ * 避免多个任务同时操作帧缓冲和 SPI。 */
 static void on_input_event(input_event_t evt)
 {
     if (xQueueSend(s_input_queue, &evt, 0) != pdTRUE) {
