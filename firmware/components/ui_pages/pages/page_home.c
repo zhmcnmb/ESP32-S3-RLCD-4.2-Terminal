@@ -9,16 +9,15 @@
 #include "ui_v2.h"
 
 /*
- * 首页(桌面时钟主屏)：时间是主要视觉焦点，环境信息降为底部两列开放式摘要。
+ * 时钟页：时间是主要视觉焦点，环境信息降为底部两列摘要。
  * 只读取 sys_state 快照，不直接访问传感器/电池/网络/SD(规范第6节)。
  *
- * 布局(400×300，UI V2共享页头/页脚见 ui_v2.h):
- *   页头        y=0..34    "桌面" + SD/WiFi/电池图标
+ * 布局(400×300):
+ *   页头        y=0..34    状态图标(无重复标题)
  *   时钟区      y=48..112  HH:MM 超大字 + 秒
- *   日期/校时   y=128..148
+ *   日期/校时   y=128..148  仅异常时显示"未校时"
  *   分隔线      y=168
  *   温湿度摘要  y=184..228 两列开放式指标
- *   页脚        y=266..    KEY/VOICE/BOOT提示
  */
 
 static const char *TAG = "page_home";
@@ -30,13 +29,12 @@ static void draw_time_section(const struct tm *t, const sys_state_snapshot_t *sn
 {
     char buf[16];
 
-    /* HH:MM 大字(8px × scale8 = 64px高) */
+    /* 时钟独占上半屏：大数字本身承担主视觉，不再放进卡片或取景框。 */
     snprintf(buf, sizeof(buf), "%02d:%02d", t->tm_hour, t->tm_min);
     int w = 5 * 8 * 8;
     int x = (400 - w) / 2;
     st7305_draw_text(x, 48, 8, buf, true);
 
-    /* 秒: 小字贴在右下角基线 */
     snprintf(buf, sizeof(buf), "%02d", t->tm_sec);
     st7305_draw_text(x + w + 6, 96, 2, buf, true);
 
@@ -45,29 +43,26 @@ static void draw_time_section(const struct tm *t, const sys_state_snapshot_t *sn
              t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, WEEKDAY_CN[t->tm_wday % 7]);
     st7305_draw_utf8((400 - st7305_utf8_width(1, date_buf)) / 2, 128, 1, date_buf, true);
 
-    if (snap->time_valid) {
-        const char *ok = "时间已校准";
-        st7305_draw_utf8((400 - st7305_utf8_width(1, ok)) / 2, 148, 1, ok, true);
-    } else {
-        /* 校时异常用反白短徽标，正常状态不显示解释性文案。 */
+    if (!snap->time_valid) {
         const char *bad = "未校时";
         int bw = st7305_utf8_width(1, bad);
         int bx = (400 - (bw + 16)) / 2;
-        st7305_fill_rect(bx, 144, bw + 16, 18, true);
-        st7305_draw_utf8(bx + 8, 148, 1, bad, false);
+        st7305_fill_rect(bx, 148, bw + 16, 18, true);
+        st7305_draw_utf8(bx + 8, 149, 1, bad, false);
     }
 }
 
-/* 两列开放式指标: 标签 + 大数值 + 单位，中间留白分隔，不用圆角卡片包裹。
- * 传感器读取失败时数值显示"--"，列位置保持不变(规范第7节) */
-static void draw_column(int x, const char *label, bool ok, const char *value, const char *unit)
+/* 反白标签把指标分组，数值保持开放排版，避免用横线和外框分割页面。 */
+static void draw_metric(int x, const char *label, bool ok, const char *value, const char *unit)
 {
-    st7305_draw_utf8(x, 184, 1, label, true);
+    int label_w = st7305_utf8_width(1, label);
+    st7305_fill_rect(x, 180, label_w + 16, 18, true);
+    st7305_draw_utf8(x + 8, 181, 1, label, false);
 
     const char *v = ok ? value : "--";
-    st7305_draw_text(x, 202, 4, v, true);
-    int vw = st7305_utf8_width(4, v);
-    st7305_draw_utf8(x + vw + 8, 218, 1, unit, true);
+    st7305_draw_text(x, 206, 4, v, true);
+    int value_w = st7305_utf8_width(4, v);
+    st7305_draw_utf8(x + value_w + 6, 222, 1, unit, true);
 }
 
 static void draw(void)
@@ -76,22 +71,19 @@ static void draw(void)
     sys_state_get_snapshot(&snap);
 
     st7305_clear(false);
-    ui_v2_draw_header("桌面", &snap);
+    ui_v2_draw_header("", &snap);
 
     struct tm t;
     time_t now = snap.now;
     localtime_r(&now, &t);
     draw_time_section(&t, &snap);
 
-    ui_v2_hline(168);
 
     char temp_buf[16], hum_buf[16];
     snprintf(temp_buf, sizeof(temp_buf), "%.1f", snap.temperature);
     snprintf(hum_buf, sizeof(hum_buf), "%.0f", snap.humidity);
-    draw_column(20, "温度", snap.env_ok, temp_buf, "C");
-    draw_column(210, "湿度", snap.env_ok, hum_buf, "%");
-
-    ui_v2_draw_footer("刷新");
+    draw_metric(24, "温度", snap.env_ok, temp_buf, "C");
+    draw_metric(224, "湿度", snap.env_ok, hum_buf, "%");
 
     esp_err_t err = st7305_flush();
     if (err != ESP_OK) {
@@ -111,11 +103,8 @@ static void on_tick(void)
 
 static bool on_key(ui_key_event_t evt)
 {
-    if (evt == UI_KEY_ACTION) {
-        draw();
-        return true;
-    }
-    return false;
+    (void)evt;
+    return false; /* 普通只读页不消费 BOOT；KEY NEXT 由 ui_manager 处理 */
 }
 
 static const ui_page_t s_page = {

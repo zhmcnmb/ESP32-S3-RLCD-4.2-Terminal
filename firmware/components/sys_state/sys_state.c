@@ -19,6 +19,7 @@ static const char *TAG = "sys_state";
 
 static sys_state_snapshot_t s_state;
 static SemaphoreHandle_t s_lock;
+static bool s_voice_cancel_req = false;
 
 /* 所有apply_*()共用的收尾: 持锁写完字段后统一在这里递增版本号，
  * 避免每个apply函数各自记一遍，也不会漏掉 */
@@ -153,6 +154,46 @@ void sys_state_apply_quota(bool available, float used_5h, float used_7d,
     xSemaphoreGive(s_lock);
 }
 
+void sys_state_apply_voice(sys_voice_phase_t phase, uint32_t turn_id, const char *reason)
+{
+    if (!s_lock) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_state.voice_phase = phase;
+    s_state.voice_turn_id = turn_id;
+    if (phase == SYS_VOICE_ERROR && reason) {
+        strncpy(s_state.voice_error, reason, sizeof(s_state.voice_error) - 1);
+        s_state.voice_error[sizeof(s_state.voice_error) - 1] = '\0';
+    } else {
+        s_state.voice_error[0] = '\0';
+    }
+    bump_version_locked();
+    xSemaphoreGive(s_lock);
+}
+
+void sys_state_request_voice_cancel(void)
+{
+    if (!s_lock) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_voice_cancel_req = true;
+    xSemaphoreGive(s_lock);
+}
+
+bool sys_state_consume_voice_cancel(void)
+{
+    if (!s_lock) {
+        return false;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool req = s_voice_cancel_req;
+    s_voice_cancel_req = false;
+    xSemaphoreGive(s_lock);
+    return req;
+}
+
 /* 没有专属后台任务的"环境状态"由这里统一采集：瞬时温湿度、电池、WiFi连接、
  * SD挂载。和 env_logger(60s历史采样)、weather_client/claude_quota_client
  * (各自mDNS+HTTP轮询)相互独立，互不阻塞——本任务只做本地读取，没有网络IO */
@@ -160,11 +201,11 @@ static void poll_task(void *arg)
 {
     (void)arg;
     for (;;) {
-        shtc3_reading_t env;
+        shtc3_reading_t env = {0};
         esp_err_t env_err = shtc3_read(&env);
         sys_state_apply_env(env_err == ESP_OK, env.temperature, env.humidity, time(NULL));
 
-        battery_status_t bat;
+        battery_status_t bat = {0};
         esp_err_t bat_err = battery_read(&bat);
         sys_state_apply_battery(bat_err == ESP_OK, bat.voltage, bat.percent, bat.charging);
 

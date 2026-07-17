@@ -10,17 +10,17 @@ extern "C" {
 #endif
 
 /*
- * ESP-SR AFE(降噪/回声消除) + WakeNet(唤醒词) + VAD 封装。内部起一个task，
- * 循环从 audio_pipeline_read() 拉PCM喂给AFE，检测结果通过回调通知上层，
- * 回调在wakeword task上下文同步执行，必须简短、非阻塞(不能在回调里做
- * 网络请求或阻塞SD写入)。
+ * ESP-SR AFE(降噪/回声消除) + MultiNet(中文命令词"贾维斯") + VAD 封装。
+ * 内部起一个task，循环从 audio_pipeline_read() 拉PCM喂给AFE，检测结果
+ * 通过回调通知上层，回调在wakeword task上下文同步执行，必须简短、非阻塞
+ * (不能在回调里做网络请求或阻塞SD写入)。
  *
  * 录音缓冲由本组件内部持有：SPEECH_START到SPEECH_END之间AFE已处理(降噪/
  * 回声消除后)的PCM自动累积到PSRAM缓冲，调用方通过 wakeword_get_utterance()
  * 取走。调用方不能再自行调用 audio_pipeline_read()——唯一的mic样本流被
  * 检测task持续读取，第二份reader会抢样本导致两边数据都不完整。
  *
- * WakeNet/VAD模型来自 partitions.csv 的 model 分区(spiffs)，
+ * MultiNet/VAD模型来自 partitions.csv 的 model 分区(spiffs)，
  * wakeword_init() 首次调用会检查分区是否已包含模型数据。
  */
 

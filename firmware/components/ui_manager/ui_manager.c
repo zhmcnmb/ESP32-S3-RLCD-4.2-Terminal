@@ -1,6 +1,5 @@
 #include "ui_manager.h"
 
-#include "display_st7305.h"
 #include "esp_check.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
@@ -28,11 +27,9 @@ static void enter_page(int index)
     }
     s_current = index;
     ESP_LOGI(TAG, "enter page: %s", s_pages[s_current]->name);
+    /* 只调用 on_enter 画首帧；禁止立刻再调 on_tick 造成双 flush */
     if (s_pages[s_current]->on_enter) {
         s_pages[s_current]->on_enter();
-    }
-    if (s_pages[s_current]->on_tick) {
-        s_pages[s_current]->on_tick();
     }
 }
 
@@ -50,23 +47,8 @@ static void dispatch_key(ui_key_event_t evt)
     }
 }
 
-/* 语音功能R0阶段未接入(P5实现)：仅在页脚区画一条短暂提示，不改变当前页面的
- * 状态或数据。提示会在下一次周期性on_tick(<=1s后)被当前页整屏重绘自然覆盖，
- * 不需要额外的定时器或恢复逻辑 */
-static void show_voice_placeholder(void)
-{
-    st7305_fill_rect(20, 266, 360, 34, false);
-    st7305_fill_rect(20, 266, 360, 1, true);
-    const char *msg = "语音功能待接入";
-    st7305_draw_utf8((400 - st7305_utf8_width(1, msg)) / 2, 280, 1, msg, true);
-    esp_err_t err = st7305_flush();
-    if (err != ESP_OK) {
-        ESP_LOGW(TAG, "语音提示flush失败: %s", esp_err_to_name(err));
-    }
-}
-
-/* 把 input_manager 的语义事件映射为页面动作。所有实际绘制(含上面的语音提示)
- * 都只在 ui_task 这一个任务里发生，避免和周期性 on_tick 竞争帧缓冲/SPI */
+/* 把 input_manager 的语义事件映射为页面动作。绘制只在 ui_task 发生，
+ * 避免和周期性 on_tick 竞争帧缓冲/SPI。未接入功能不产生占位 UI。 */
 static void dispatch_input(input_event_t evt)
 {
     switch (evt) {
@@ -80,7 +62,7 @@ static void dispatch_input(input_event_t evt)
         dispatch_key(UI_KEY_BACK);
         break;
     case INPUT_EVENT_VOICE:
-        show_voice_placeholder();
+        /* 保留枚举兼容；P5.2 起 KEY 长按不再发布，也不显示占位提示 */
         break;
     }
 }

@@ -31,6 +31,27 @@ static void on_sntp_synced(struct timeval *tv)
     ESP_LOGI(TAG, "SNTP已同步并写回RTC");
 }
 
+/* newlib(本项目为兼容esp-sr预编译库的_ctype_符号选用newlib而非picolibc)不像
+ * picolibc那样声明timegm()——它不是ISO C标准函数，newlib干脆没实现。手写按UTC
+ * 解释struct tm的经典逐年累加算法，避免依赖某个libc特有扩展 */
+static time_t utc_mktime(const struct tm *tm)
+{
+    static const int days_before_month[12] = {
+        0, 31, 59, 90, 120, 151, 181, 212, 243, 273, 304, 334,
+    };
+    int year = tm->tm_year + 1900;
+    long days = 0;
+    for (int y = 1970; y < year; y++) {
+        days += ((y % 4 == 0 && y % 100 != 0) || y % 400 == 0) ? 366 : 365;
+    }
+    days += days_before_month[tm->tm_mon];
+    if (tm->tm_mon > 1 && ((year % 4 == 0 && year % 100 != 0) || year % 400 == 0)) {
+        days += 1;   /* 闰年2月已过，补一天 */
+    }
+    days += tm->tm_mday - 1;
+    return (time_t)days * 86400L + tm->tm_hour * 3600L + tm->tm_min * 60L + tm->tm_sec;
+}
+
 esp_err_t time_service_init(const char *timezone)
 {
     ESP_RETURN_ON_FALSE(timezone, ESP_ERR_INVALID_ARG, TAG, "bad arg");
@@ -53,8 +74,8 @@ esp_err_t time_service_init(const char *timezone)
     struct tm utc;
     ESP_RETURN_ON_ERROR(rtc_pcf85063_get_time(&utc), TAG, "读RTC失败");
 
-    /* RTC存的是UTC，timegm按UTC解释 */
-    time_t t = timegm(&utc);
+    /* RTC存的是UTC，utc_mktime按UTC解释(newlib没有timegm) */
+    time_t t = utc_mktime(&utc);
     struct timeval tv = { .tv_sec = t, .tv_usec = 0 };
     settimeofday(&tv, NULL);
 

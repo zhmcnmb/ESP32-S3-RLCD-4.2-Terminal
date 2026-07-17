@@ -17,11 +17,10 @@ extern "C" {
  * 卡未插入时 storage_sd_init() 返回错误但不影响系统运行——
  * SD卡是可选外设，调用方应降级处理而非中止启动。
  *
- * 持久化 Interface：append、stream
- * read、atomic replace、checkpoint。内部持一把互斥锁串行化所有文件操作，
- * 调用方不需要（也不应该）自己给FATFS访问加锁；rel_path一律校验拒绝
- * ".."和绝对路径，防止越界写到挂载点之外。后续录音/会话/Skill/长期记忆
- * (P6+)都通过这4个操作访问SD，不再各自直接fopen。
+ * 持久化 Interface：append、stream read、size/list 元数据读取、atomic replace、checkpoint。
+ * 内部持一把互斥锁串行化所有文件操作，调用方不需要（也不应该）自己给 FATFS 访问加锁；
+ * rel_path一律校验拒绝".."和绝对路径，防止越界写到挂载点之外。后续录音/会话/Skill/
+ * 长期记忆(P6+)都通过这些操作访问SD，不再各自直接fopen。
  */
 
 #define STORAGE_SD_MOUNT_POINT "/sdcard"
@@ -40,15 +39,23 @@ bool storage_sd_is_mounted(void);
 /* 容量信息，未挂载时返回错误 */
 esp_err_t storage_sd_get_info(storage_sd_info_t *out);
 
-/* 追加一行文本到文件(自动加换行)。路径相对挂载点，如 "env.csv"。
- * line必须指向RAM(栈/堆/.data)，不能是flash直接映射地址——见下方atomic_replace
- * 的DMA说明，同一限制对append_line同样适用 */
+/* 追加一行文本到文件(自动加换行)。路径相对挂载点，如 "agent/sessions/current.jsonl"；
+ * 缺失的父目录会在同一存储锁内自动创建。line必须指向RAM(栈/堆/.data)，不能是
+ * flash直接映射地址——见下方atomic_replace的DMA说明，同一限制对append_line同样适用。 */
 esp_err_t storage_sd_append_line(const char *rel_path, const char *line);
 
 /* 从offset开始流式读取最多buf_len字节到buf。返回实际读取字节数，0表示
  * EOF/文件不存在/读取失败(用storage_sd_is_mounted()区分是否因为未挂载)。
  * 用于后续按块读取CSV/会话/记忆文件，不需要一次性把整个文件读进内存 */
 int storage_sd_read_chunk(const char *rel_path, uint32_t offset, void *buf, size_t buf_len);
+
+/* 读取相对文件的长度。不读取正文；文件不存在/未挂载时返回对应错误。 */
+esp_err_t storage_sd_get_file_size(const char *rel_path, uint32_t *out_size);
+
+/* 枚举相对目录下的直接子项，仅传回文件名而非完整路径；callback 在SD存储锁内执行，
+ * 因而不得重入任何 storage_sd_* 函数，调用方应先收集名称再逐项读取。 */
+typedef esp_err_t (*storage_sd_dir_entry_cb_t)(const char *name, void *ctx);
+esp_err_t storage_sd_list_dir(const char *rel_dir, storage_sd_dir_entry_cb_t on_entry, void *ctx);
 
 /* 原子替换文件全部内容：先写临时文件，成功后rename覆盖目标，避免写到一半
  * 掉电导致文件损坏或截断。用于配置/校验和/manifest等"整体替换"场景。

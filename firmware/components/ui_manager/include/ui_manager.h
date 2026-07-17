@@ -9,13 +9,13 @@ extern "C" {
 
 /*
  * 页面导航与渲染调度。GPIO消抖/长短按判定归 input_manager 所有，本模块只消费
- * 其发布的语义事件(NEXT/ACTION/BACK/VOICE)，不读取GPIO。
+ * 其发布的语义事件，不读取GPIO。
  *
  * 交互约定:
- *   NEXT (KEY短按)   -> 切换到下一页
+ *   NEXT (KEY短按)    -> 切换到下一页
  *   ACTION (BOOT短按) -> UI_KEY_ACTION 下发给当前页
  *   BACK (BOOT长按)   -> UI_KEY_BACK   下发给当前页
- *   VOICE (KEY长按)   -> R0未接语音，仅短暂提示，不改变当前页面(P5实现)
+ *   VOICE             -> 保留枚举兼容，P5.2 起不发布、不显示占位
  *
  * 任务: ui_task, 栈4096, 优先级5 (登记于 docs/coding-standards.md 第7节)
  */

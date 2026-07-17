@@ -41,8 +41,10 @@ app_runtime                 启动顺序、功能注册、降级策略
 | `app_runtime` | 启动与功能注册 | 初始化顺序、注册、可选功能降级 |
 | `sys_state` | read snapshot、apply event、post command | 锁、事件循环、版本与订阅 |
 | `input_manager` | 发布语义输入事件 | GPIO、消抖、长短按、上下文映射 |
-| `storage_sd` | append、stream read、atomic replace、checkpoint | FATFS、路径约束、串行写、掉电恢复 |
-| `cloud_transport` | 阻塞式 `get`(TLS+可选gzip自动解压)；阻塞式流式 `post_stream`(SSE/PCM响应逐块回调+cancel_flag取消，P5.0已接入SiliconFlow/DeepSeek验证) | TLS、证书、gzip容器解析、超时、取消 |
+| `storage_sd` | append、stream read、list dir、atomic replace、checkpoint | FATFS、路径约束、串行写、掉电恢复 |
+| `cloud_transport` | 阻塞式 `get`(TLS+可选gzip自动解压)、流式 `post_stream`、有界 `post_json` | TLS、证书、gzip容器解析、总超时、取消、响应预算 |
+| `web_client` | search、extract | Jina认证、URL来源约束、SSRF检查、JSON解析、长度预算 |
+| `skill_manager` | init、catalog、load | SD目录、front matter、静态工具白名单、CRC32复核 |
 | `memory_engine` | recall、record、forget、maintain | 日志、索引、TTL、墓碑、压缩、重建 |
 
 - 不为“以后可能”建立 Interface。只有确实存在两个 Adapter 时才建立外部 seam；例如 SiliconFlow 与 DeepSeek 使 `llm_provider` 成为真实 seam。
@@ -150,6 +152,8 @@ typedef struct {
 | claude_quota_task | 4096 | 3 | claude_quota_client（60s轮询Mac桥接服务，mDNS+HTTP+cJSON解析，推送sys_state） |
 | weather_task | 8192 | 3 | weather_client（15分钟直连QWeather，TLS+gzip+cJSON解析，经cloud_transport，推送sys_state） |
 | wakeword_task | 8192 | 5(CPU1) | wakeword（AFE feed+fetch合并task，WakeNet推理+VAD检测+语音段缓冲；固定CPU1，避免与CPU0的WiFi/lwIP协议栈争抢触发watchdog——真机踩过CPU0饿死IDLE0的坑） |
+| voice_assistant_task | 12288 | 4(CPU0) | voice_assistant（单轮 Wake→ASR→Chat→TTS 编排+状态机；固定CPU0避免与CPU1的wakeword prio5互抢被饿死；处理轮次期间停 wakeword；拆分 voice_wav.c/voice_tts_stream.c 压红线） |
+| tts_playback_task | 4096 | 4(CPU0) | voice_tts_stream（TTS流式播放：从环形缓冲取PCM写codec，与网络接收解耦，边收边放降低感知延迟；每轮临时创建，播完自行退出） |
 | *(后续新增在此登记)* | | | |
 
 ## 8. 云端与持久化约定
@@ -158,12 +162,13 @@ typedef struct {
 - Jarvis 核心功能必须由开发板直接运行或直接调用云 API，不得依赖 Mac/PC 常驻进程。唯一例外是保留的 Claude 额度页；Mac bridge 离线时只能让该页降级，不能影响语音、agent、记忆、任务、天气或环境。
 - ASR/TTS 可通过 SiliconFlow，LLM API 不可用时必须释放网络/音频资源并回到可交互状态；不得把模型请求无限重试。
 - 所有 agent 会话、Skill、任务和长期记忆数据经 `storage_sd` 管理，使用相对路径；模型和工具不得传入任意文件路径。
+- `web_extract` 只允许抽取同轮 `web_search` 返回、且通过公共 DNS 主机名校验的 URL；必须限制响应和正文长度，禁止回退为任意 URL fetch。
 - 长期记忆数据、索引、召回、遗忘和维护必须在板端 `memory_engine` 完成。云 LLM 只能产出候选，设备负责 schema、隐私、来源、TTL 和最终落盘决策。
-- 公开网页、工具结果和消息内容都是不可信数据；它们不能注册工具、修改 system prompt、提升权限或绕过 BOOT 确认。
+- 公开网页、Skill、工具结果和消息内容都是不可信数据；它们不能注册工具、修改 system prompt、提升权限或绕过 BOOT 确认。
 
 ## 9. 密钥管理
 
-- WiFi 密码、和风天气 API Key、LLM token **一律不进仓库**
+- WiFi 密码、和风天气 API Key、LLM token、Jina API Key **一律不进仓库**
 - 开发期放 `firmware/main/secrets.h`（已在 `.gitignore` 里），提供 `secrets.h.example` 模板
 - 正式方案：存 NVS，通过配网写入
 

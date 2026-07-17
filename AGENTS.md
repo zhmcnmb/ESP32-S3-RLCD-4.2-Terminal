@@ -33,7 +33,7 @@ app_runtime       启动顺序、注册、降级策略
 
 | 目录 | 用途 |
 |---|---|
-| `firmware/main/` | `app_main.c`(芯片诊断 + `app_runtime` 启动) + `secrets.h`(gitignore，本地凭证：WiFi/桥接服务mDNS主机名，模板见 `secrets.h.example`) |
+| `firmware/main/` | `app_main.c`(芯片诊断 + `app_runtime` 启动) + `secrets.h`(gitignore，本地凭证：WiFi/桥接服务mDNS主机名/云API Key，模板见 `secrets.h.example`) |
 | `firmware/components/board_rlcd42/` | 唯一的引脚定义与总线init(I2C/SPI/按键)，暴露handle与I2C扫描 |
 | `firmware/components/display_st7305/` | ST7305反射屏驱动：1bpp帧缓冲、画点/矩形、ASCII字体(仅`0x20~0x5A`)、中文16×16字库(`font_cn16.c`，自动生成) |
 | `firmware/components/ui_manager/` | 页面注册、导航、tick调度；只消费 `input_manager` 语义事件，不读 GPIO |
@@ -42,7 +42,7 @@ app_runtime       启动顺序、注册、降级策略
 | `firmware/components/rtc_pcf85063/` | RTC读写(BCD转换)、掉电检测 |
 | `firmware/components/net_manager/` | WiFi STA连接、断线自动重连 |
 | `firmware/components/time_service/` | 启动从RTC恢复时间，联网后SNTP校时并写回RTC |
-| `firmware/components/storage_sd/` | SD卡挂载(SDMMC 1-bit + FATFS) |
+| `firmware/components/storage_sd/` | SD卡挂载(SDMMC 1-bit + FATFS)、受锁的追加/流式读/目录枚举/原子替换 |
 | `firmware/components/battery/` | 电池电压ADC读取 |
 | `firmware/components/env_logger/` | 后台任务60s采样温湿度，环形缓冲(1小时窗口)+CSV落盘 |
 | `firmware/components/claude_quota_client/` | 保留的可选 Claude 额度页数据源；Mac 离线时独立降级 |
@@ -50,11 +50,13 @@ app_runtime       启动顺序、注册、降级策略
 | `firmware/components/app_runtime/` | 启动顺序、页面/功能注册、可选能力降级 |
 | `firmware/components/sys_state/` | 线程安全状态快照、事件、命令；UI/工具的唯一共享状态入口 |
 | `firmware/components/input_manager/` | KEY/BOOT 物理输入所有者；当前 KEY 短按翻页，未接入的长按说话占位将在 P5.2 删除 |
-| `firmware/components/cloud_transport/` | HTTPS `get`(TLS+gzip自动解压)+流式`post_stream`(SSE/PCM逐块回调+取消)，weather_client/llm_provider/asr_client/tts_client共用 |
+| `firmware/components/cloud_transport/` | HTTPS `get`(TLS+gzip自动解压)、流式`post_stream`(SSE/PCM逐块回调+取消)和有界`post_json`，云客户端共用 |
 | `firmware/components/llm_provider/` | SiliconFlow/DeepSeek统一chat接口，SSE解析+tool_calls归一化+重试 |
 | `firmware/components/asr_client/` | SiliconFlow语音转写(multipart上传SD卡WAV) |
 | `firmware/components/tts_client/` | SiliconFlow语音合成(PCM流式回调) |
-| `firmware/components/memory_engine/` *(P6)* | SD 上的会话、画像、长期记忆日志、索引、召回与维护 |
+| `firmware/components/web_client/` | Jina Search/Reader 的受限 Adapter：最多5个来源、仅可抽取最近搜索来源、16KB响应与8KB正文上限 |
+| `firmware/components/skill_manager/` | SD声明式Skill索引、静态工具白名单校验、正文CRC32复核和按需加载；SD缺失时不影响普通agent |
+| `firmware/components/memory_engine/` *(P6.2 M1基线已构建，待SD真机验收)* | 板载长期记忆的 recall/record/forget/maintain Interface；内部处理带CRC的JSONL、tombstone、画像双槽快照、TTL、互斥状态访问与有界本地召回，SD缺失时禁用记忆而不影响短会话 |
 | `tools/` | `gen_font.py`(中文字库生成器) + `charset.txt`(手工补充字符集，仅运行时才出现的文案用) |
 | `docs/` | `coding-standards.md`(强制开发规范)、`hardware-pinmap.md`(引脚权威表)、`vendor-provenance.md`(摘取代码来源登记) |
 | `bridge/` | 开发期可选工具，只代理Claude用量；正式产品不依赖 |

@@ -34,10 +34,14 @@ bool audio_pipeline_is_ready(void);
  * 区分是否因为设备未就绪 */
 size_t audio_pipeline_read(int16_t *buf, size_t count, uint32_t timeout_ms);
 
-/* 阻塞写入count个int16 mono样本到ES8311播放；内部管理PA_EN
- * (写入期间使能，停止后关闭防止待机噪声/爆音)。
- * 返回ESP_OK/ESP_ERR_NOT_FINISHED(被cancel或超时中断)/ESP_ERR_INVALID_STATE(未就绪) */
-esp_err_t audio_pipeline_write(const int16_t *buf, size_t count, uint32_t timeout_ms);
+/* 阻塞写入 count 个 int16 mono 样本到 ES8311 播放。不管理 PA_EN——流式播放场景
+ * (多次调用写同一段音频)由调用方在会话首尾调用 audio_pipeline_set_output_enable()，
+ * 避免每次调用都开关 PA 产生咔哒声。底层 codec 写接口不提供超时参数；需要中断时
+ * 调用 audio_pipeline_cancel()，当前块结束后返回 ESP_ERR_NOT_FINISHED。 */
+esp_err_t audio_pipeline_write(const int16_t *buf, size_t count);
+
+/* 显式控制功放使能。播放前 enable(true)，整段(可能多次write)播放完 enable(false)。 */
+void audio_pipeline_set_output_enable(bool enable);
 
 /* 置位取消标志：正在阻塞的read/write尽快返回，不清空标志本身。
  * 调用方在开始下一次read/write前必须调用 audio_pipeline_clear_cancel() */
