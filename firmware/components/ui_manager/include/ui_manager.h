@@ -14,7 +14,7 @@ extern "C" {
  * 交互约定:
  *   NEXT (KEY短按)    -> 切换到下一页
  *   ACTION (BOOT短按) -> UI_KEY_ACTION 下发给当前页
- *   BACK (BOOT长按)   -> UI_KEY_BACK   下发给当前页
+ *   BACK (BOOT长按)   -> 语音活动时全局取消，否则 UI_KEY_BACK 下发给当前页
  *   VOICE             -> 保留枚举兼容，P5.2 起不发布、不显示占位
  *
  * 任务: ui_task, 栈4096, 优先级5 (登记于 docs/coding-standards.md 第7节)

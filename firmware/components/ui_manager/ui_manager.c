@@ -6,6 +6,7 @@
 #include "freertos/queue.h"
 #include "freertos/task.h"
 #include "input_manager.h"
+#include "sys_state.h"
 
 static const char *TAG = "ui";
 
@@ -33,9 +34,26 @@ static void enter_page(int index)
     }
 }
 
+static bool cancel_active_voice(ui_key_event_t evt)
+{
+    if (evt != UI_KEY_BACK) {
+        return false;
+    }
+    sys_state_snapshot_t snap;
+    sys_state_get_snapshot(&snap);
+    if (snap.voice_phase == SYS_VOICE_IDLE) {
+        return false;
+    }
+    sys_state_request_voice_cancel();
+    return true;
+}
+
 static void dispatch_key(ui_key_event_t evt)
 {
     if (s_current < 0) {
+        return;
+    }
+    if (cancel_active_voice(evt)) {
         return;
     }
     const ui_page_t *page = s_pages[s_current];
