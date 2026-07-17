@@ -91,23 +91,23 @@ app_runtime                    启动顺序、功能注册、降级策略
 voice_assistant                语音状态机、turn_id、取消
       |
 agent_runtime                  Pi 风格 message -> model -> tool 循环
-      +-- agent_tool_registry  工具 schema、权限、超时、输出预算
-      +-- agent_skill_loader   SD Skills 索引与渐进加载
+      +-- agent_tools          静态工具 schema、参数校验、输出预算
+      +-- skill_manager        SD Skills 索引、白名单校验、渐进加载
       +-- agent_session        当前会话、上下文预算、裁剪
       +-- memory_engine        SD 日志、索引、召回、遗忘、维护
       +-- scheduler            持久任务、RTC/NTP、错过任务策略
       |
 capability adapters
-      +-- siliconflow_client   ASR、Chat SSE、TTS、可选 Embedding
-      +-- deepseek_client      Chat SSE、Function Calling
-      +-- web_provider         Search、Extract、引用
+      +-- llm_provider         SiliconFlow、DeepSeek Chat SSE
+      +-- asr_client / tts_client
+      +-- web_client           Jina Search、Reader、来源约束
       +-- ha_provider          Home Assistant 白名单操作
       +-- channel_provider     设备 UI；后期 Telegram
       +-- companion_client     可选 Browser、MCP、远程执行
       |
 platform modules
-      +-- cloud_transport      TLS、流式 body、SSE、取消、重试
-      +-- storage_sd           文件、原子写、离线队列
+      +-- cloud_transport      TLS、受限JSON、流式 body、SSE、取消、重试
+      +-- storage_sd           文件、目录、原子写、离线队列
       +-- wakeword             AFE、WakeNet、VAD
       +-- audio_pipeline       ES7210/ES8311、I2S、录放缓冲
       |
@@ -116,7 +116,7 @@ board_rlcd42
 
 ### 3.1 分层要求
 
-- `page_voice` 不直接访问网络、音频或 SD。
+- `page_jarvis` 不直接访问网络、音频或 SD。
 - 所有页面只读 `sys_state` 快照，通过命令/event 请求动作。
 - `voice_assistant` 是语音编排模块，拥有一轮对话的状态。
 - `agent_runtime` 不知道 UI 和音频，只处理消息与工具循环。
@@ -136,8 +136,10 @@ P0-P4 现有页面直接读取设备数据、`ui_manager` 直接轮询按键、`
 |---|---|---|
 | `sys_state` | read snapshot、apply event、post command | 锁、事件循环、状态版本 |
 | `input_manager` | 发布语义输入事件 | GPIO、消抖、长短按、上下文映射 |
-| `storage_sd` | append、stream read、atomic replace、queue checkpoint | FATFS、路径约束、互斥、掉电恢复 |
-| `cloud_transport` | request、stream callback、cancel | TLS、证书、chunked、SSE、重试、限流 |
+| `storage_sd` | append、stream read、list dir、atomic replace、queue checkpoint | FATFS、路径约束、互斥、掉电恢复 |
+| `cloud_transport` | get、post JSON、stream callback、cancel | TLS、证书、chunked、SSE、重试、限流、响应预算 |
+| `web_client` | search、extract | Jina认证、搜索来源约束、SSRF检查、JSON解析、长度预算 |
+| `skill_manager` | init、catalog、load | SD目录、front matter、静态工具白名单、CRC32复核 |
 | `llm_provider` | chat stream、tool delta、cancel | SiliconFlow/DeepSeek 请求映射、错误归一化 |
 | `agent_runtime` | start turn、cancel、snapshot | 消息循环、工具轮次、上下文预算 |
 | `memory_engine` | recall、record、forget、maintain | SD 日志、索引、排序、TTL、墓碑、压缩、恢复 |
@@ -441,12 +443,9 @@ esp_err_t memory_maintain(uint32_t budget_ms);
 ### 8.4 SD 布局与掉电恢复
 
 ```text
-/sdcard/agent/
   profile/
-    profile_a.md
-    profile_b.md
-    manifest_a.bin
-    manifest_b.bin
+    profile_a.json
+    profile_b.json
   memory/
     events-0001.jsonl
     tombstones.jsonl
@@ -572,7 +571,7 @@ Claude 用量依赖 Mac 上的 `omp` 登录态，暂时无法完全板端化，�
 | BOOT / GPIO0 | 普通页面不占用；CONFIRM 时短按确认，agent 活动时长按取消 |
 | PWR | 硬件开关，不接 GPIO，不能分配固件功能 |
 
-语音入口使用已经真机验证的 WakeNet 唤醒词，不再保留尚未接入的“KEY 长按说话”占位。未来只有在嘈杂环境实测证明需要物理备用入口时，才重新评估 KEY 长按；在此之前删除 `INPUT_EVENT_VOICE` 的用户可见处理和“语音功能待接入”提示。
+语音入口使用已经真机验证的 MultiNet 命令词"贾维斯"作为唤醒网关(无官方WakeNet中文"贾维斯"指纹模型，决策与踩坑记录见 CLAUDE.md "P5.2 唤醒词改为贾维斯"一节)，不再保留尚未接入的"KEY 长按说话"占位。未来只有在嘈杂环境实测证明需要物理备用入口时，才重新评估 KEY 长按；在此之前删除 `INPUT_EVENT_VOICE` 的用户可见处理和"语音功能待接入"提示。
 
 ### 9.5 字库与回答显示
 
@@ -696,32 +695,64 @@ USB-Serial-JTAG调试接口)halt两个CPU核心直接检查FreeRTOS任务状态�
 
 验收：普通问答连续 20 轮；唤醒到状态切换可见；TTS 可取消；断网不重启、不死锁，恢复后可再次唤醒；普通页面无未接入功能提示和冗余成功说明。
 
-### P6.0 设备端智能体
+### P6.0 设备端智能体（实现已构建，待真机验收）
 
-加入 Pi 风格 agent loop、三个只读工具和 SD JSONL 会话。
+已实现 Pi 风格 `agent_runtime`：每轮先记录 user 消息，最多4次模型往返和4次串行只读工具调用；
+工具结果与模型消息受固定上下文/输出预算限制。`agent_session` 在已挂载 SD 时恢复并追加
+`agent/sessions/current.jsonl`，无 SD 时退化为 RAM 短会话。首批静态工具是设备状态、环境
+和缓存天气；每个工具必须解析受限 JSON 参数，不合法参数只产生结构化错误而不执行副作用。
 
 验收：设备状态、环境和天气问题触发正确工具；非法参数不执行；工具循环不会无限运行；重启后能恢复最近上下文。
 
-### P6.1 Web 与 Skills
+### P6.1 Web 与 Skills（实现已构建，待凭证、网络与SD真机验收）
 
-1. 实现 `web_search`，保留来源 URL。
-2. 实现云端 `web_extract`，加入 SSRF、长度和超时限制。
-3. 实现 SD Skill 索引、按需加载、版本与哈希校验。
-4. 首批 Skill：环境报告、每日助手、Web Research。
+1. `cloud_transport_post_json()` 仅用于小型 JSON 请求：调用方提供固定响应缓冲，超出预算失败；
+   它不替代 SSE/PCM 的流式接口。
+2. `web_client` 使用 Jina Search/Reader：单次搜索最多5个来源、响应上限16KB(PSRAM)、正文
+   上限8KB。`web_extract` 的 URL 必须精确命中最近一次成功 `web_search` 的来源，且拒绝
+   localhost、`.local`、用户信息、字面 IP 和非HTTP(S) scheme；不提供任意 URL fetch。
+3. `skill_manager` 只索引 `agent/skills/<name>/SKILL.md`：名称限小写字母/数字/连字符，
+   front matter 必须且只能包含 `name`、`description`、`version`、`tools`、`content_crc32`；
+   `tools` 必须是启动时传入的静态白名单子集，加载正文时重新校验 CRC32。最多索引8个 Skill，
+   单个正文最多2KB。
+4. SD 未挂载、Jina Key 为空或索引校验失败时，相应工具不注册；普通 agent 和三个快照工具
+   继续可用。网页和 Skill 的内容始终是不可信指导文本，不能新增工具或提升权限。
 
 验收：能完成“搜索三个来源 -> 抽取两篇正文 -> 带来源总结”；恶意网页不能注册工具或绕过确认；拔掉 SD 后普通 agent 仍可工作。
 
 ### P6.2 板载长期记忆
 
-按小步可验收顺序实现：
+M1 的可构建基线已实现，待 SD 真机验收：`memory_engine` 只公开 recall、record、forget、
+maintain 四个调用；明确 `remember` 的短文本会以带 CRC32 的 JSONL 追加，删除另写
+tombstone。恢复时会忽略未换行的撕裂末行、CRC 错误和重复 ID；TTL 仅在可信 RTC/SNTP
+时间下允许写入。当前内存镜像上限 64 条、单条 240 字节，状态读写经内部互斥锁串行化。
 
-1. M1 可靠日志：`memory_engine` 四接口、单 storage task、profile A/B 槽、event JSONL + CRC；只支持明确 remember/list/forget。
-2. M2 本地召回：字符 bigram/trigram、postings、BM25 风格排序和 2-4KB 上下文预算。
+`profile` 类型额外写入 2KB 上限的双槽 JSON 快照（`profile_a.json` / `profile_b.json`）。
+每次写入递增 generation 并交替替换另一个槽，快照带 CRC32；启动选择最新有效槽，再回放
+事件和 tombstone，因此单个槽损坏不丢失旧画像，事件日志仍是事实来源。画像最多保留 6 条，
+并在每轮作为 2KB memory context 的候选注入 system prompt。
+
+agent 仅在用户话语包含“记住/记下”或“忘记/删除记忆”时注册有副作用的
+`remember` / `forget_memory`；`memory_search` 和 `list_recent_memories` 只读。工具参数
+使用固定 JSON schema，不接受模型指定的路径或任意字段。SD 不可用时不注册记忆工具，
+普通 agent 保持 RAM 短会话。
+
+当前召回直接扫描至多 64 条记录：多字查询以 UTF-8 字符 bigram 计算重叠，单字问题才回退
+单字符匹配；`profile` 始终候选，其他类型必须匹配，随后按类型重要性、精确命中和时效排序。
+这是有界基线，不是持久 postings/BM25 索引。
+
+M1 仍缺独立 storage task；M2 的持久 n-gram postings/BM25 索引、M3 的自动提炼/
+supersede/分片压缩，以及 M4-M5 均未实现，不能把当前基线标记为 P6.2 完成。
+
+按小步可验收顺序继续：
+
+1. 将同步 SD 操作收敛至有界 storage task，并在真机验证画像双槽、记录、重启恢复、撕裂末行和删除。
+2. M2 本地召回：持久字符 bigram/trigram postings、BM25 风格排序和 2-4KB 上下文预算。
 3. M3 生命周期：LLM 异步提炼候选，本机 schema/隐私/重复校验，加入 TTL、supersede、tombstone 和分片 compaction。
 4. M4 语义实验：只对 n-gram 评测失败样本测试 SiliconFlow 128 维 embedding + 本地 int8 向量，不达成显著收益就不合入主线。
 5. M5 容量维护：设定记忆条数/字节上限、会话归档、低价值衰减和用户导出。
 
-验收：跨重启能回忆已确认偏好；撕裂末行可忽略；删除整个 index 后能从事实日志重建；被删除、过期或取代的记忆不再召回；自动提炼失败不阻断对话；10k 条压力测试中查询和维护不阻塞语音/UI。
+最终验收：跨重启能回忆已确认偏好；撕裂末行可忽略；删除整个 index 后能从事实日志重建；被删除、过期或取代的记忆不再召回；自动提炼失败不阻断对话；10k 条压力测试中查询和维护不阻塞语音/UI。
 
 ### P6.3 主动助手
 

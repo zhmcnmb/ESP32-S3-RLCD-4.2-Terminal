@@ -42,23 +42,24 @@ P5起新增功能继续遵守这条依赖方向，不要为语音/agent开临时
 | `rtc_pcf85063` | RTC读写(BCD转换)、掉电检测。**符号必须用全前缀**，见Gotchas |
 | `net_manager` | WiFi STA连接、断线自动重连(慢速重试用`esp_timer`单次定时器，事件回调不阻塞)；`net_manager_register_connected_cb()`供首次GOT_IP一次性回调(SNTP启动用) |
 | `time_service` | 启动从RTC恢复时间，联网后SNTP校时并写回RTC |
-| `storage_sd` | SD卡挂载(SDMMC 1-bit + FATFS)；深化后Interface = append/stream read/atomic replace/checkpoint，内部互斥锁串行化+路径校验(拒绝`..`和绝对路径) |
+| `storage_sd` | SD卡挂载(SDMMC 1-bit + FATFS)；深化后Interface = append/stream read/list dir/atomic replace/checkpoint，内部互斥锁串行化+路径校验(拒绝`..`和绝对路径) |
 | `battery` | 电池电压ADC(GPIO4,3倍分压,eFuse校准)，电量百分比估算 |
 | `env_logger` | 后台任务60s采样SHTC3，环形缓冲(1小时窗口)+CSV落盘(经`storage_sd`)，每次采样后把历史整体推给`sys_state` |
 | `claude_quota_client` | mDNS解析桥接服务主机名+HTTP轮询`/api/quota/compact`+cJSON解析，60s周期，结果推给`sys_state`(登记于coding-standards第7节) |
 | `weather_client` | 设备直连QWeather `/v7/weather/now`（HTTPS+cJSON解析），15分钟周期，结果推给`sys_state`。经`cloud_transport`组件走TLS+gzip解压，原因见下方"P3 天气架构"一节 |
-| `cloud_transport` | HTTPS GET(gzip自动解压)+流式POST(SSE/PCM响应逐块回调+取消)公共底座；weather_client/llm_provider/asr_client/tts_client共用 |
+| `cloud_transport` | HTTPS GET(gzip自动解压)+流式POST(SSE/PCM响应逐块回调+取消)+有界JSON POST公共底座；所有云客户端共用 |
 | `llm_provider` | SiliconFlow/DeepSeek统一chat接口，SSE解析+tool_calls增量归一化+429/503/504重试一次；provider由`llm_provider_init()`运行时选择 |
 | `asr_client` | SiliconFlow语音转写，multipart/form-data上传SD卡WAV文件 |
 | `tts_client` | SiliconFlow语音合成，PCM流式回调(跨网络分片字节对齐拼接) |
+| `audio_pipeline` / `wakeword` / `voice_assistant` | ES8311/ES7210音频、ESP-SR唤醒、单轮语音编排与取消；P5.1真机验证完成，P5.2闭环待完整真机验收 |
+| `page_jarvis` | 默认智能体页面；原创机械面甲风专属头像和 agent 状态的唯一视觉出口 |
+| `agent_runtime` / `agent_session` / `agent_tools` | Pi 风格消息/工具循环、SD JSONL会话、静态只读工具、轮次与输出预算；P6.0实现已构建，待真机验收 |
+| `web_client` / `skill_manager` | Jina Search/Reader受限工具和SD Skill索引/CRC32按需加载；P6.1实现已构建，待凭证、网络与SD真机验收 |
 
-**待实现**
+**下一阶段**
 
 | Component | 职责 | Phase |
 |---|---|---|
-| `audio_pipeline` / `wakeword` / `voice_assistant` | ES8311/ES7210音频、ESP-SR唤醒、一轮语音编排与取消 | P5.1 |
-| `page_jarvis` | 默认智能体页面；原创机械面甲风专属头像和 agent 状态的唯一视觉出口，可借鉴变形金刚式结构感但不照搬角色 | P5.2 |
-| `agent_runtime` / `agent_session` / `agent_tool_registry` | Pi 风格消息/工具循环、SD 会话、工具权限与输出预算 | P6.0 |
 | `memory_engine` / `scheduler` | 板载长期记忆与持久任务；数据、检索、维护全部在 SD/设备端 | P6.2/P6.3 |
 
 **中文字库**：`tools/charset.txt` 维护字符集 → `python3 tools/gen_font.py` 生成 `font_cn16.c`。
@@ -282,6 +283,44 @@ ESP-SR模型体积285KB(WakeNet+VAD)，走独立`model`分区(0x800000/8MB预留
 P5.1真机验证细节见上方"P5.1 完成记录"；DeepSeek验证情况与P5.0一致，待补Key后
 用户协助验证；播放是否有爆音待用户下次配合验证。
 
+## P5.2 唤醒词改为"贾维斯"(2026-07-16)✅已完成并真机验证
+
+官方WakeNet无中文"贾维斯"发音的指纹模型(核对过esp-sr全部50+条目，无匹配项)。
+用户反馈英文"Jarvis"发音不好唤醒，要求直接用中文。方案取舍（详见
+`docs/voice-agent-design.md`第9.4节）：MultiNet单命令词识别(`mn5q8_cn`)持续
+监听替代WakeNet作为唤醒网关，命令词`"jia wei si"`(拼音)。MultiNet是官方设计给
+"唤醒后识别一句命令"用的重量级模型，非WakeNet那种为常驻低功耗监听调优的指纹
+模型，接受更高CPU/误唤醒风险换取真中文唤醒体验。
+
+**实现要点**：
+- `wakeword.c`不再依赖`res->wakeup_state==WAKENET_DETECTED`，改为每帧无条件调用
+  `multinet->detect()`，`ESP_MN_STATE_DETECTED`且`command_id==0`时才触发唤醒，
+  且只在`STATE_IDLE`时响应（避免`STATE_LISTENING`录音期间被用户问题误判打断）。
+  `DETECTED`/`TIMEOUT`后都调用`multinet->clean()`重置解码窗口，持续监听不需要
+  外部状态机维护"唤醒后关闭MultiNet"的开关。
+- VAD语音段采集逻辑完全不变，唤醒后仍是`STATE_LISTENING`+VAD START/END沿用
+  原有实现。
+
+**踩过的坑**：
+1. **Kconfig命令词槽位有19条esp-sr自带示例词("打开空调"等)当默认值**：只填了
+   `CONFIG_CN_SPEECH_COMMAND_ID0`,ID1-19仍会用Kconfig自带default注册进解码
+   词表，白白稀释目标短语识别精度。**规则**：启用`SR_MN_CN_MULTINET*_SINGLE_
+   RECOGNITION*`系列时，未用到的`CN_SPEECH_COMMAND_ID*`必须显式设成`""`覆盖
+   默认值，不能只填自己要用的那一条。
+2. **esp-sr的`libfst.a`预编译库用经典newlib ABI，链接期报`undefined reference
+   to `_ctype_``**：IDF 6.0默认libc是picolibc(`CONFIG_LIBC_PICOLIBC=y`)，没有
+   这个符号。加`CONFIG_LIBC_NEWLIB=y`切回newlib解决。
+3. **切newlib后`timegm()`编译报"implicit declaration"**：newlib(与picolibc不同)
+   压根不声明`timegm`，不是哪个feature test宏没开的问题。`time_service.c`手写
+   `utc_mktime()`逐年累加算法替代，不依赖libc扩展。
+4. **真机验证唤醒置信度偏低**：命中日志`prob=0.084`，默认阈值下能触发但余量不大，
+   后续如出现误唤醒或漏唤醒，需要调`multinet->set_det_threshold()`。
+
+**验证**：真机烧录，boot日志确认`MN_COMMAND`词表只有`Command ID0: jia wei si`
+一条；用户对着设备说"贾维斯"（停顿）"今天天气怎么样"，串口日志完整走通
+`唤醒! 命令词="贾维斯"` → `裁剪尾部静音` → `ASR: 今天天气怎么样？` →
+`LLM: 今天天气晴朗，气温适宜，适合外出活动。`全链路无报错。
+
 ## 已知风险 / 待确认事项
 
 - ~~SD卡引脚~~ 已确认：SDMMC外设1-bit模式，CLK=38/CMD=21/D0=39，与显示SPI无冲突（详见`docs/hardware-pinmap.md`）
@@ -308,10 +347,10 @@ P5.1真机验证细节见上方"P5.1 完成记录"；DeepSeek验证情况与P5.0
 | R0 | 架构治理：`app_runtime`、`sys_state`、`input_manager`、深化 `storage_sd`、四页快照迁移 ✅已完成 | 架构保留；旧 UI V2 视觉规范已废弃 |
 | P5.0 | 云 API 与资源验证：SiliconFlow ASR/TTS、SiliconFlow/DeepSeek LLM、SSE/Tools ✅已完成并真机验证(DeepSeek因API Key暂缺仅完成编译验证) | 见下方"P5.0 完成记录" |
 | P5.1 | 本地音频链路：`audio_pipeline`(ES7210/ES8311)、`wakeword`(ESP-SR AFE/WakeNet/VAD) ✅已完成并真机验证(2026-07-16，真实唤醒词5次连续触发+WAV写入成功，修复死空气缓冲bug)，播放爆音待用户下次确认 | 见上方"P5.1 完成记录" |
-| P5.2 | Jarvis 单轮闭环：清理冗余UI、默认头像页、`voice_assistant`、Wake→ASR→Chat→TTS、删除P5.1自检 | 20轮闭环；状态可见；断网恢复；正式设备不依赖Mac |
-| P6.0-P6.1 | 板载 agent：Pi 风格 loop、本地工具、SD 会话、Web/Skills | 工具权限和上下文预算可控；外部网页不能越权 |
-| P6.2-P6.3 | 个人智能体：板载记忆、提醒/cron，按需接 HA 或 Telegram | 记忆可重建、可删除；掉电任务不重复执行 |
-| P7-P8 | 可选 Companion 与产品化：仅重型能力、稳定性、OTA、安全 | Companion 断开不影响 L1-L4；长期运行稳定 |
+| P5.2 | Jarvis 单轮闭环：清理冗余UI、默认头像页、`voice_assistant`、Wake→ASR→Chat→TTS、删除P5.1自检。实现已构建，待完整真机验收 | 20轮闭环；状态可见；断网恢复；正式设备不依赖Mac |
+| P6.0-P6.1 | 板载 agent：Pi 风格 loop、本地工具、SD 会话、受限 Web/Skills。实现已构建，待凭证、网络与SD真机验收 | 工具权限和上下文预算可控；外部网页不能越权 |
+| P6.2 | 板载长期记忆：M1 JSONL/CRC/tombstone/画像双槽/显式记忆工具已构建，待SD真机验收；独立storage task、持久n-gram索引、自动提炼和容量维护仍未实现 | 当前基线可显式保存、列出、删除记忆；完整记忆需可重建、可删除且不阻塞语音/UI |
+| P6.3 | 提醒/cron，按需接 HA 或 Telegram | 掉电任务不重复执行 |
 
 ## 构建
 

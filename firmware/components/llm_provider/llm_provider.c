@@ -3,12 +3,14 @@
  * base URL 由各 provider 专用 .c 提供，本文件按 kind 分发。
  */
 #include "llm_provider.h"
+#include "llm_provider_internal.h"
 #include <stdlib.h>
 #include <string.h>
 #include "cJSON.h"
 #include "cloud_transport.h"
 #include "esp_err.h"
 #include "esp_http_client.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 
 static const char *TAG = "llm_provider";
@@ -46,96 +48,6 @@ static const char *get_base_url(llm_provider_kind_t kind)
     }
 }
 
-/* 请求体构建（辅助） */
-static esp_err_t add_messages_to_array(cJSON *msgs,
-                                       const llm_message_t *messages, int message_count)
-{
-    for (int i = 0; i < message_count; i++) {
-        cJSON *m = cJSON_CreateObject();
-        if (!m) {
-            return ESP_ERR_NO_MEM;
-        }
-        switch (messages[i].role) {
-        case AGENT_ROLE_SYSTEM:
-            cJSON_AddStringToObject(m, "role", "system"); break;
-        case AGENT_ROLE_USER:
-            cJSON_AddStringToObject(m, "role", "user"); break;
-        case AGENT_ROLE_ASSISTANT:
-            cJSON_AddStringToObject(m, "role", "assistant"); break;
-        case AGENT_ROLE_TOOL:
-            cJSON_AddStringToObject(m, "role", "tool");
-            if (messages[i].tool_call_id) {
-                cJSON_AddStringToObject(m, "tool_call_id", messages[i].tool_call_id);
-            }
-            break;
-        }
-        if (messages[i].content) {
-            cJSON_AddStringToObject(m, "content", messages[i].content);
-        } else {
-            cJSON_AddNullToObject(m, "content");
-        }
-        cJSON_AddItemToArray(msgs, m);
-    }
-    return ESP_OK;
-}
-
-static esp_err_t add_tools_to_array(cJSON *arr,
-                                    const llm_tool_def_t *tools, int tool_count)
-{
-    for (int i = 0; i < tool_count; i++) {
-        cJSON *t = cJSON_CreateObject();
-        if (!t) {
-            return ESP_ERR_NO_MEM;
-        }
-        cJSON_AddStringToObject(t, "type", "function");
-        cJSON *fn = cJSON_AddObjectToObject(t, "function");
-        cJSON_AddStringToObject(fn, "name", tools[i].name);
-        cJSON_AddStringToObject(fn, "description", tools[i].description);
-        if (tools[i].parameters_json) {
-            cJSON *params = cJSON_Parse(tools[i].parameters_json);
-            if (params) {
-                cJSON_AddItemToObject(fn, "parameters", params);
-            }
-        }
-        cJSON_AddItemToArray(arr, t);
-    }
-    return ESP_OK;
-}
-
-static esp_err_t build_request_body(const char *model,
-                                    const llm_message_t *messages, int message_count,
-                                    const llm_tool_def_t *tools, int tool_count,
-                                    char **out_body, size_t *out_len)
-{
-    cJSON *root = cJSON_CreateObject();
-    if (!root) {
-        return ESP_ERR_NO_MEM;
-    }
-    cJSON_AddStringToObject(root, "model", model);
-    cJSON_AddBoolToObject(root, "stream", true);
-    cJSON *msgs = cJSON_AddArrayToObject(root, "messages");
-    esp_err_t err = add_messages_to_array(msgs, messages, message_count);
-    if (err != ESP_OK) {
-        cJSON_Delete(root);
-        return err;
-    }
-    if (tools && tool_count > 0) {
-        cJSON *arr = cJSON_AddArrayToObject(root, "tools");
-        err = add_tools_to_array(arr, tools, tool_count);
-        if (err != ESP_OK) {
-            cJSON_Delete(root);
-            return err;
-        }
-    }
-    char *json = cJSON_PrintUnformatted(root);
-    cJSON_Delete(root);
-    if (!json) {
-        return ESP_ERR_NO_MEM;
-    }
-    *out_body = json;
-    *out_len  = strlen(json);
-    return ESP_OK;
-}
 
 /* tool_call 增量累积 */
 static void accumulate_tool_call(sse_ctx_t *ctx, cJSON *tc_item)
@@ -176,9 +88,13 @@ static void accumulate_tool_call(sse_ctx_t *ctx, cJSON *tc_item)
     if (fn) {
         cJSON *args_j = cJSON_GetObjectItem(fn, "arguments");
         if (args_j && cJSON_IsString(args_j) && args_j->valuestring[0] != '\0') {
-            size_t cur = strlen(slot->arguments);
-            size_t rem = sizeof(slot->arguments) - cur - 1;
-            strncat(slot->arguments, args_j->valuestring, rem);
+            size_t current = strlen(slot->arguments);
+            size_t fragment = strlen(args_j->valuestring);
+            size_t remaining = sizeof(slot->arguments) - current - 1;
+            if (fragment > remaining) {
+                slot->arguments_truncated = true;
+            }
+            strncat(slot->arguments, args_j->valuestring, remaining);
         }
     }
 }
@@ -277,8 +193,8 @@ static esp_err_t do_chat_once(const llm_message_t *messages, int message_count,
 {
     char *body = NULL;
     size_t body_len = 0;
-    esp_err_t err = build_request_body(s_model, messages, message_count,
-                                       tools, tool_count, &body, &body_len);
+    esp_err_t err = llm_provider_build_request_body(s_model, messages, message_count,
+                                                     tools, tool_count, &body, &body_len);
     if (err != ESP_OK) {
         return err;
     }
@@ -324,27 +240,32 @@ esp_err_t llm_provider_chat(const llm_message_t *messages, int message_count,
     if (!messages || message_count <= 0 || !sink || !out_status) {
         return ESP_ERR_INVALID_ARG;
     }
+    sse_ctx_t *sse_ctx = heap_caps_calloc(1, sizeof(*sse_ctx), MALLOC_CAP_SPIRAM);
+    if (!sse_ctx) {
+        return ESP_ERR_NO_MEM;
+    }
     *out_status = 0;
-    sse_ctx_t sse_ctx;
-    /* 最多一次自动重试 */
+    esp_err_t result = ESP_FAIL;
     for (int attempt = 0; attempt < 2; attempt++) {
-        memset(&sse_ctx, 0, sizeof(sse_ctx));
-        sse_ctx.sink = sink;
+        memset(sse_ctx, 0, sizeof(*sse_ctx));
+        sse_ctx->sink = sink;
         int status = 0;
-        esp_err_t err = do_chat_once(messages, message_count,
-                                     tools, tool_count,
-                                     &sse_ctx, cancel_flag, &status);
+        esp_err_t err = do_chat_once(messages, message_count, tools, tool_count,
+                                     sse_ctx, cancel_flag, &status);
         *out_status = status;
         if (err == ESP_OK && status >= 200 && status < 300) {
-            return ESP_OK;
+            result = ESP_OK;
+            break;
         }
+        result = (err != ESP_OK) ? err : ESP_ERR_HTTP_CONNECT;
         bool retryable = ((err == ESP_ERR_HTTP_CONNECT || (err == ESP_OK && status != 0))
                          && (status == 429 || status == 503 || status == 504));
         if (retryable && attempt + 1 < 2) {
             ESP_LOGW(TAG, "HTTP %d on attempt %d, retrying once...", status, attempt + 1);
             continue;
         }
-        return (err != ESP_OK) ? err : ESP_ERR_HTTP_CONNECT;
+        break;
     }
-    return ESP_FAIL;
+    free(sse_ctx);
+    return result;
 }

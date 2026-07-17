@@ -86,7 +86,8 @@ static char *build_request_body(const char *text)
 
     cJSON_AddStringToObject(root, "model", "FunAudioLLM/CosyVoice2-0.5B");
     cJSON_AddStringToObject(root, "input", text);
-    cJSON_AddStringToObject(root, "voice", "FunAudioLLM/CosyVoice2-0.5B:anna");
+    /* Jarvis 默认使用官方预置沉稳男声；模型前缀是 SiliconFlow 的必填格式。 */
+    cJSON_AddStringToObject(root, "voice", "FunAudioLLM/CosyVoice2-0.5B:alex");
     cJSON_AddStringToObject(root, "response_format", "pcm");
     cJSON_AddNumberToObject(root, "sample_rate", 16000);
     cJSON_AddBoolToObject(root, "stream", 1);

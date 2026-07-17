@@ -23,19 +23,46 @@ extern "C" {
 
 /*
  * 阻塞发起一次HTTPS GET，证书校验走ESP官方bundle(不接受自签名/无效证书)。
- * header_name/header_value 可选自定义请求头(如API Key)，不需要则传NULL。
- * 响应若带 Content-Encoding: gzip 会自动用ROM miniz解压；解压/接收后的正文写入
- * out_buf(以'\0'结尾)，*out_len 是不含结尾'\0'的字节数。
+ * header_name/header_value 可选自定义请求头(如API Key)，不需要则传NULL。响应若带
+ * Content-Encoding: gzip 会自动用ROM miniz解压；解压/接收后的正文写入response
+ * （以'\0'结尾），out_len 是不含结尾'\0'的字节数。
  *
  * 失败返回:
- *   ESP_ERR_INVALID_ARG    参数为空或out_buf_size太小(至少留2字节)
+ *   ESP_ERR_INVALID_ARG    参数为空或response_size太小(至少留2字节)
  *   ESP_ERR_NO_MEM         内部接收缓冲区分配失败
  *   ESP_ERR_HTTP_CONNECT   HTTP状态码不是2xx
  *   ESP_ERR_INVALID_RESPONSE  gzip容器头解析失败或解压失败
  *   其余esp_http_client_perform()透传的网络/TLS错误(超时、证书校验失败等)
  */
-esp_err_t cloud_transport_get(const char *url, const char *header_name, const char *header_value,
-                               char *out_buf, size_t out_buf_size, size_t *out_len);
+typedef struct {
+    const char *url;
+    const char *header_name;
+    const char *header_value;
+    char *response;
+    size_t response_size;
+    size_t out_len;
+} cloud_transport_get_request_t;
+
+esp_err_t cloud_transport_get(cloud_transport_get_request_t *request);
+
+/*
+ * 有界 JSON POST：固定发送 application/json 并要求 JSON 响应，响应由内部流式
+ * 接收进调用方提供的 RAM 缓冲，绝不为云端响应无上限分配内存。
+ * response_size 至少为2；超出缓冲预算返回 ESP_ERR_INVALID_SIZE，out_status 语义与
+ * post_stream 一致。适用于搜索、正文提取等小型结构化 API，不替代 SSE/PCM 流。
+ */
+typedef struct {
+    const char *url;
+    const char *auth_header_value; /* 非NULL时发送 Authorization: Bearer <value> */
+    const void *body;
+    size_t body_len;
+    char *response;
+    size_t response_size;
+    const volatile bool *cancel_flag;
+} cloud_transport_json_request_t;
+
+esp_err_t cloud_transport_post_json(const cloud_transport_json_request_t *request,
+                                    size_t *out_len, int *out_status);
 
 /*
  * 响应体分块回调：流式请求每收到一段响应体原始字节就调用一次，不做任何切帧/解析——

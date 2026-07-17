@@ -9,8 +9,17 @@ static const char *TAG = "input";
 
 #define POLL_INTERVAL_MS 30
 #define LONG_PRESS_MS    1000
+#define DEBOUNCE_STABLE_SAMPLES 3
 
 static input_event_cb_t s_handler = NULL;
+
+typedef struct {
+    bool raw_pressed;
+    bool pressed;
+    uint8_t stable_samples;
+    int held_ms;
+    bool long_fired;
+} button_state_t;
 
 static void emit(input_event_t evt)
 {
@@ -19,50 +28,58 @@ static void emit(input_event_t evt)
     }
 }
 
-/* KEY/BOOT两键消抖与长短按判定逻辑完全对称：
- * 持续按下累计时长，到阈值前松开算短按(NEXT/ACTION)，到阈值那一刻立即触发长按
- * (VOICE/BACK)并置位，之后即便继续按住或松开都不再补发短按 */
+static bool update_button(button_state_t *state, bool raw_pressed)
+{
+    if (raw_pressed != state->raw_pressed) {
+        state->raw_pressed = raw_pressed;
+        state->stable_samples = 1;
+        return false;
+    }
+    if (state->stable_samples < DEBOUNCE_STABLE_SAMPLES) {
+        state->stable_samples++;
+    }
+    if (state->stable_samples != DEBOUNCE_STABLE_SAMPLES || state->pressed == raw_pressed) {
+        return false;
+    }
+    state->pressed = raw_pressed;
+    return true;
+}
+
+/* KEY 短按 NEXT；长按暂不发布事件（WakeNet 是默认语音入口，未验证前不占位）。
+ * BOOT 短按 ACTION、长按 BACK（上层按上下文解读为取消）。 */
 static void poll_gpio(void)
 {
-    static bool key_prev = false;
-    static int key_held_ms = 0;
-    static bool key_long_fired = false;
+    static button_state_t key;
+    static button_state_t boot;
 
-    static bool boot_prev = false;
-    static int boot_held_ms = 0;
-    static bool boot_long_fired = false;
-
-    bool key = board_btn_key_pressed();
-    if (key) {
-        key_held_ms += POLL_INTERVAL_MS;
-        if (!key_long_fired && key_held_ms >= LONG_PRESS_MS) {
-            key_long_fired = true;
-            emit(INPUT_EVENT_VOICE);
+    bool key_changed = update_button(&key, board_btn_key_pressed());
+    if (key.pressed) {
+        key.held_ms += POLL_INTERVAL_MS;
+        if (!key.long_fired && key.held_ms >= LONG_PRESS_MS) {
+            key.long_fired = true; /* 吞掉随后的短按，不发布用户可见事件 */
         }
-    } else {
-        if (key_prev && !key_long_fired) {
+    } else if (key_changed) {
+        if (!key.long_fired) {
             emit(INPUT_EVENT_NEXT);
         }
-        key_held_ms = 0;
-        key_long_fired = false;
+        key.held_ms = 0;
+        key.long_fired = false;
     }
-    key_prev = key;
 
-    bool boot = board_btn_boot_pressed();
-    if (boot) {
-        boot_held_ms += POLL_INTERVAL_MS;
-        if (!boot_long_fired && boot_held_ms >= LONG_PRESS_MS) {
-            boot_long_fired = true;
+    bool boot_changed = update_button(&boot, board_btn_boot_pressed());
+    if (boot.pressed) {
+        boot.held_ms += POLL_INTERVAL_MS;
+        if (!boot.long_fired && boot.held_ms >= LONG_PRESS_MS) {
+            boot.long_fired = true;
             emit(INPUT_EVENT_BACK);
         }
-    } else {
-        if (boot_prev && !boot_long_fired) {
+    } else if (boot_changed) {
+        if (!boot.long_fired) {
             emit(INPUT_EVENT_ACTION);
         }
-        boot_held_ms = 0;
-        boot_long_fired = false;
+        boot.held_ms = 0;
+        boot.long_fired = false;
     }
-    boot_prev = boot;
 }
 
 static void input_task(void *arg)

@@ -47,13 +47,20 @@ esp_codec_dev_handle_t ap_create_es8311(i2s_chan_handle_t tx_handle,
     const audio_codec_ctrl_if_t *ctrl = create_i2c_ctrl(ES8311_CODEC_DEFAULT_ADDR);
     if (ctrl == NULL) return NULL;
 
-    /* PA_EN 由 audio_pipeline 用普通 GPIO 手动管理，此处不交给 es8311 的 pa_pin */
+    /* PA_EN 由 audio_pipeline 用普通 GPIO 手动管理，此处不交给 es8311 的 pa_pin。
+     * hw_gain 决定 vol% → DAC 寄存器的映射，不设则按最保守值导致声音极小(实测无声)。
+     * pa_voltage/codec_dac_voltage 为板级典型值，pa_gain 取功放典型增益 */
     es8311_codec_cfg_t codec_cfg = {
         .ctrl_if    = ctrl,
         .gpio_if    = gpio_if,
         .codec_mode = ESP_CODEC_DEV_WORK_MODE_DAC,
         .pa_pin     = -1,
         .use_mclk   = true,
+        .hw_gain    = {
+            .pa_voltage       = 5.0f,
+            .codec_dac_voltage = 3.3f,
+            .pa_gain          = 6.0f,
+        },
     };
     const audio_codec_if_t *codec_if = es8311_codec_new(&codec_cfg);
     if (codec_if == NULL) {
@@ -90,7 +97,7 @@ esp_codec_dev_handle_t ap_create_es8311(i2s_chan_handle_t tx_handle,
         esp_codec_dev_close(dev);
         return NULL;
     }
-    esp_codec_dev_set_out_vol(dev, 60);
+    esp_codec_dev_set_out_vol(dev, 100);
     return dev;
 }
 
@@ -139,6 +146,6 @@ esp_codec_dev_handle_t ap_create_es7210(i2s_chan_handle_t rx_handle)
         esp_codec_dev_close(dev);
         return NULL;
     }
-    esp_codec_dev_set_in_gain(dev, 20.0f);
+    esp_codec_dev_set_in_gain(dev, 37.5f); /* ES7210 PGA 上限，远场拾音需要最大模拟增益 */
     return dev;
 }

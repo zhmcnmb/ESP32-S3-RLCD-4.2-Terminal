@@ -90,8 +90,11 @@ static void poll_once(void)
     snprintf(url, sizeof(url), "https://%s/v7/weather/now?location=%s", s_api_host, s_location);
 
     char resp[RESP_BUF_SIZE];
-    size_t resp_len = 0;
-    esp_err_t err = cloud_transport_get(url, "X-QW-Api-Key", s_api_key, resp, sizeof(resp), &resp_len);
+    cloud_transport_get_request_t request = {
+        .url = url, .header_name = "X-QW-Api-Key", .header_value = s_api_key,
+        .response = resp, .response_size = sizeof(resp),
+    };
+    esp_err_t err = cloud_transport_get(&request);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "请求失败: %s", esp_err_to_name(err));
         mark_unavailable();

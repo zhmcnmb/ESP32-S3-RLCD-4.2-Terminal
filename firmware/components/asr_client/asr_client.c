@@ -168,6 +168,7 @@ static esp_err_t send_and_parse(const uint8_t *body, size_t body_len,
     }
     memcpy(out_text, text_item->valuestring, text_len);
     out_text[text_len] = '\0';
+    ESP_LOGI(TAG, "识别文本(%dB): '%s'", (int)text_len, out_text);
 
     cJSON_Delete(root);
     heap_caps_free(ctx.buf);
@@ -233,8 +234,13 @@ esp_err_t asr_client_transcribe(const char *wav_rel_path, char *out_text,
     heap_caps_free(wav_buf);   /* WAV数据已拷入body，释放 */
 
     /* 3. 发送请求+收集响应+解析JSON */
+    ESP_LOGI(TAG, "上传 multipart body %uB", (unsigned)body_len);
     err = send_and_parse(body, body_len, cancel_flag, out_status,
                          out_text, out_text_size);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "转写请求失败: %s status=%d", esp_err_to_name(err),
+                 out_status ? *out_status : -1);
+    }
 
     heap_caps_free(body);
     return err;

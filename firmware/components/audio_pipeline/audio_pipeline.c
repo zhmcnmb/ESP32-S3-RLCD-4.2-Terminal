@@ -217,51 +217,38 @@ size_t audio_pipeline_read(int16_t *buf, size_t count, uint32_t timeout_ms)
     return done;
 }
 
-esp_err_t audio_pipeline_write(const int16_t *buf, size_t count, uint32_t timeout_ms)
+esp_err_t audio_pipeline_write(const int16_t *buf, size_t count)
 {
-    if (!s_state.ready) return ESP_ERR_INVALID_STATE;
+    if (!s_state.ready || s_state.es8311_dev == NULL) return ESP_ERR_INVALID_STATE;
     if (buf == NULL || count == 0) return ESP_OK;
     if (atomic_load(&s_state.cancel)) return ESP_ERR_NOT_FINISHED;
 
-    /* 写入前使能 PA */
-    gpio_set_level(BOARD_PA_EN_PIN, 1);
-
-    const size_t   sample_bytes = sizeof(int16_t);
-    const uint32_t chunk_ms     = (AP_CHUNK_SAMPLES * 1000) / AUDIO_PIPELINE_SAMPLE_RATE;
-    uint32_t       elapsed_ms   = 0;
-    size_t         done         = 0;
-    bool           cancelled    = false;
-
+    /* 分块写：每块之间检查 cancel，保证半双工可被打断。PA 使能由调用方
+     * 通过 audio_pipeline_set_output_enable() 在会话首尾控制，本函数不碰，
+     * 否则流式播放场景下每次调用都开关PA会产生咔哒声。
+     * 用 esp_codec_dev_write 而非裸 i2s_channel_write：ES8311 由 esp_codec_dev
+     * 管理 DAC 数据通路，裸写会绕过 codec 导致无声/失败(xiaozhi 同款做法) */
+    const size_t chunk = AP_CHUNK_SAMPLES * 4; /* 640样本≈40ms，减少调用次数 */
+    size_t done = 0;
+    bool cancelled = false;
     while (done < count) {
         if (atomic_load(&s_state.cancel)) { cancelled = true; break; }
-        if (timeout_ms != 0 && elapsed_ms >= timeout_ms) { cancelled = true; break; }
-
         size_t want = count - done;
-        if (want > AP_CHUNK_SAMPLES) want = AP_CHUNK_SAMPLES;
-
-        uint32_t wait_ms = (timeout_ms == 0) ? portMAX_DELAY
-                          : (timeout_ms - elapsed_ms > chunk_ms) ? chunk_ms
-                          : (timeout_ms - elapsed_ms);
-        size_t bytes_written = 0;
-        esp_err_t r = i2s_channel_write(s_state.i2s_tx,
-                                        (const char *)(buf + done),
-                                        want * sample_bytes,
-                                        &bytes_written,
-                                        pdMS_TO_TICKS(wait_ms));
-        if (r == ESP_ERR_TIMEOUT) { cancelled = true; break; }
-        if (r != ESP_OK) {
-            ESP_LOGW(TAG, "i2s_channel_write 错误: %s", esp_err_to_name(r));
-            gpio_set_level(BOARD_PA_EN_PIN, 0);
+        if (want > chunk) want = chunk;
+        int rc = esp_codec_dev_write(s_state.es8311_dev,
+                                     (void *)(buf + done), (int)(want * sizeof(int16_t)));
+        if (rc != ESP_CODEC_DEV_OK) {
+            ESP_LOGW(TAG, "esp_codec_dev_write 错误: %d", rc);
             return ESP_FAIL;
         }
-        size_t wrote = bytes_written / sample_bytes;
-        done += wrote;
-        elapsed_ms += (wrote * 1000) / AUDIO_PIPELINE_SAMPLE_RATE;
+        done += want;
     }
-
-    /* 写入结束或中途退出都关闭 PA，避免待机爆音 */
-    gpio_set_level(BOARD_PA_EN_PIN, 0);
     return cancelled ? ESP_ERR_NOT_FINISHED : ESP_OK;
+}
+
+void audio_pipeline_set_output_enable(bool enable)
+{
+    gpio_set_level(BOARD_PA_EN_PIN, enable ? 1 : 0);
 }
 
 void audio_pipeline_cancel(void)

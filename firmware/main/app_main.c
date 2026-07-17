@@ -1,7 +1,5 @@
 #include <inttypes.h>
 
-#include "p51_selftest.h"
-
 #include "app_runtime.h"
 #include "esp_chip_info.h"
 #include "esp_flash.h"
@@ -9,8 +7,14 @@
 #include "esp_psram.h"
 #include "secrets.h"
 
+#ifdef JINA_API_KEY
+#define OPTIONAL_JINA_API_KEY JINA_API_KEY
+#else
+#define OPTIONAL_JINA_API_KEY ""
+#endif
+
 /* 启动编排(docs/coding-standards.md 第3节): 只做芯片诊断+调用app_runtime，
- * 具体初始化顺序/页面注册/联网全部下沉到 app_runtime(规范第1节强制迁移) */
+ * 具体初始化顺序/页面注册/联网/语音全部下沉到 app_runtime */
 
 static const char *TAG = "app_main";
 
@@ -40,12 +44,10 @@ void app_main(void)
         .qweather_api_host = QWEATHER_API_HOST,
         .qweather_location = QWEATHER_LOCATION,
         .siliconflow_api_key = SILICONFLOW_API_KEY,
+        .siliconflow_llm_model = "deepseek-ai/DeepSeek-V4-Flash",
         .deepseek_api_key = DEEPSEEK_API_KEY,
-        .use_deepseek_llm = false, /* P5.0首发走SiliconFlow；切DeepSeek只改这一行 */
+        .use_deepseek_llm = false, /* 对话继续走SiliconFlow，不切到DeepSeek直连 */
+        .jina_api_key = OPTIONAL_JINA_API_KEY,
     };
     ESP_ERROR_CHECK(app_runtime_start(&cfg));
-
-    /* P5.1临时: 启动音频链路自检(wakeword+录音+WAV+取消测试)。
-     * P5.2正式语音助手接入后替换为 voice_assistant_start() */
-    p51_selftest_start();
 }

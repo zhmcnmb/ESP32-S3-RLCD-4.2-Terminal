@@ -1,8 +1,10 @@
 #include "storage_sd.h"
 
 #include <errno.h>
+#include <dirent.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include "board_rlcd42.h"
 #include "driver/sdmmc_host.h"
@@ -37,6 +39,25 @@ static esp_err_t build_path(const char *rel_path, char *out, size_t out_len)
     }
     return ESP_OK;
 }
+/* 在已持有文件系统锁时创建相对路径中缺失的父目录。路径已由 build_path()
+ * 拒绝绝对路径和 ".."，因此不会在挂载点外创建目录。 */
+static esp_err_t ensure_parent_dirs(char *path)
+{
+    char *first = path + strlen(STORAGE_SD_MOUNT_POINT) + 1;
+    for (char *cursor = first; *cursor; cursor++) {
+        if (*cursor != '/') {
+            continue;
+        }
+        *cursor = '\0';
+        if (mkdir(path, 0775) != 0 && errno != EEXIST) {
+            *cursor = '/';
+            return ESP_FAIL;
+        }
+        *cursor = '/';
+    }
+    return ESP_OK;
+}
+
 
 esp_err_t storage_sd_init(void)
 {
@@ -121,6 +142,12 @@ esp_err_t storage_sd_append_line(const char *rel_path, const char *line)
     ESP_RETURN_ON_ERROR(build_path(rel_path, path, sizeof(path)), TAG, "非法路径: %s", rel_path);
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t dir_err = ensure_parent_dirs(path);
+    if (dir_err != ESP_OK) {
+        xSemaphoreGive(s_lock);
+        ESP_LOGW(TAG, "创建父目录失败: %s", path);
+        return dir_err;
+    }
     FILE *f = fopen(path, "a");
     if (!f) {
         xSemaphoreGive(s_lock);
@@ -163,6 +190,54 @@ int storage_sd_read_chunk(const char *rel_path, uint32_t offset, void *buf, size
     return (int)n;
 }
 
+esp_err_t storage_sd_get_file_size(const char *rel_path, uint32_t *out_size)
+{
+    ESP_RETURN_ON_FALSE(out_size && s_card && s_lock, ESP_ERR_INVALID_STATE, TAG, "未挂载或参数错");
+    char path[MAX_PATH_LEN];
+    ESP_RETURN_ON_ERROR(build_path(rel_path, path, sizeof(path)), TAG, "非法路径: %s", rel_path);
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        xSemaphoreGive(s_lock);
+        return ESP_ERR_NOT_FOUND;
+    }
+    int seek_err = fseek(f, 0, SEEK_END);
+    long length = seek_err == 0 ? ftell(f) : -1;
+    fclose(f);
+    xSemaphoreGive(s_lock);
+    if (length < 0 || (unsigned long)length > UINT32_MAX) {
+        return ESP_FAIL;
+    }
+    *out_size = (uint32_t)length;
+    return ESP_OK;
+}
+
+esp_err_t storage_sd_list_dir(const char *rel_dir, storage_sd_dir_entry_cb_t on_entry, void *ctx)
+{
+    ESP_RETURN_ON_FALSE(rel_dir && on_entry && s_card && s_lock, ESP_ERR_INVALID_STATE, TAG,
+                        "未挂载或参数错");
+    char path[MAX_PATH_LEN];
+    ESP_RETURN_ON_ERROR(build_path(rel_dir, path, sizeof(path)), TAG, "非法目录: %s", rel_dir);
+
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    DIR *dir = opendir(path);
+    if (!dir) {
+        xSemaphoreGive(s_lock);
+        return errno == ENOENT ? ESP_ERR_NOT_FOUND : ESP_FAIL;
+    }
+    esp_err_t err = ESP_OK;
+    struct dirent *entry = NULL;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0) continue;
+        err = on_entry(entry->d_name, ctx);
+        if (err != ESP_OK) break;
+    }
+    closedir(dir);
+    xSemaphoreGive(s_lock);
+    return err;
+}
+
 esp_err_t storage_sd_atomic_replace(const char *rel_path, const void *data, size_t len)
 {
     ESP_RETURN_ON_FALSE(data && s_card && s_lock, ESP_ERR_INVALID_STATE, TAG, "未挂载或参数错");
@@ -175,6 +250,12 @@ esp_err_t storage_sd_atomic_replace(const char *rel_path, const void *data, size
     ESP_RETURN_ON_FALSE((size_t)tn < sizeof(tmp_path), ESP_ERR_INVALID_SIZE, TAG, "路径过长");
 
     xSemaphoreTake(s_lock, portMAX_DELAY);
+    esp_err_t dir_err = ensure_parent_dirs(path);
+    if (dir_err != ESP_OK) {
+        xSemaphoreGive(s_lock);
+        ESP_LOGW(TAG, "创建父目录失败: %s", path);
+        return dir_err;
+    }
     esp_err_t ret = ESP_OK;
     FILE *f = fopen(tmp_path, "w");
     if (!f) {

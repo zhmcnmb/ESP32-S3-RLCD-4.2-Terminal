@@ -9,15 +9,14 @@
 #include "ui_v2.h"
 
 /*
- * Claude用量页(预算仪表)：百分比是核心，离散块进度条与重置时间为解释信息。
- * 只读取 sys_state 快照，不直接轮询桥接服务(规范第6节)。
+ * Claude用量页：百分比是核心，离散块进度条与重置时间为解释信息。
+ * 只读取 sys_state 快照；Mac bridge 离线时本页独立降级(规范第6/8节)。
  *
- * 布局(400×300，UI V2共享页头/页脚见 ui_v2.h):
+ * 布局(400×300):
  *   页头        y=0..34    "CLAUDE用量" + SD/WiFi/电池图标
- *   新鲜度/旧数据徽标  y=44
+ *   异常徽标    y=44       仅旧/离线
  *   5H窗口      y=70..102
  *   7D窗口      y=150..182
- *   页脚        y=266..    KEY/VOICE/BOOT提示
  */
 
 static const char *TAG = "page_quota";
@@ -81,14 +80,14 @@ static void draw_window(int y, const char *label, float used, time_t resets_at, 
 
     char pct[8];
     snprintf(pct, sizeof(pct), "%.0f%%", used * 100);
-    st7305_draw_text(70, y + 2, 3, pct, true);
+    st7305_draw_text(20, y + 32, 5, pct, true);
 
-    int pw = 8 * 3 * (int)strlen(pct);
-    draw_segments(70 + pw + 24, y + 4, 170, 16, used, used >= 0.8f);
+    /* 进度条贴齐主内容宽度；它表达配额消耗，不作为装饰性分隔线。 */
+    draw_segments(20, y + 82, 340, 12, used, used >= 0.8f);
 
     char remain[32];
     format_remaining(resets_at, now, remain, sizeof(remain));
-    st7305_draw_utf8(20, y + 32, 1, remain, true);
+    st7305_draw_utf8(20, y + 104, 1, remain, true);
 }
 
 static void draw(void)
@@ -102,25 +101,21 @@ static void draw(void)
     bool has_data = snap.quota_updated_at != 0;
     bool stale = has_data && !snap.quota_available;
 
-    char sub[32];
-    if (!has_data) {
-        snprintf(sub, sizeof(sub), "首次数据获取中");
-    } else if (stale) {
-        snprintf(sub, sizeof(sub), "旧数据");
-    } else {
-        long age = (long)(snap.now - snap.quota_updated_at);
-        snprintf(sub, sizeof(sub), "更新%ld秒前", age < 0 ? 0 : age);
+    if (stale) {
+        const char *badge = "旧";
+        st7305_draw_utf8(400 - 40 - st7305_utf8_width(1, badge), 44, 1, badge, true);
+    } else if (!has_data && !snap.wifi_connected) {
+        const char *badge = "离线";
+        st7305_draw_utf8(400 - 40 - st7305_utf8_width(1, badge), 44, 1, badge, true);
     }
-    st7305_draw_utf8(400 - 20 - st7305_utf8_width(1, sub), 44, 1, sub, true);
 
     if (has_data) {
-        draw_window(70, "5H", snap.quota_used_5h, snap.quota_resets_5h, snap.now);
-        draw_window(150, "7D", snap.quota_used_7d, snap.quota_resets_7d, snap.now);
+        draw_window(42, "5H", snap.quota_used_5h, snap.quota_resets_5h, snap.now);
+        draw_window(170, "7D", snap.quota_used_7d, snap.quota_resets_7d, snap.now);
     } else {
-        ui_v2_draw_empty_state(120, "正在获取", "首次连接桥接服务中");
+        /* Mac bridge 是本页唯一依赖；离线时独立降级，不提实现细节 */
+        ui_v2_draw_empty_state(120, snap.wifi_connected ? "等待数据" : "离线", NULL);
     }
-
-    ui_v2_draw_footer("刷新");
 
     esp_err_t err = st7305_flush();
     if (err != ESP_OK) {
@@ -144,10 +139,7 @@ static void on_tick(void)
 
 static bool on_key(ui_key_event_t evt)
 {
-    if (evt == UI_KEY_ACTION) {
-        draw();
-        return true;
-    }
+    (void)evt;
     return false;
 }
 

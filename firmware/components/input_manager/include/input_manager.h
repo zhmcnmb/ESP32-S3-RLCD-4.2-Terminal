@@ -10,9 +10,9 @@ extern "C" {
  * KEY/BOOT物理按键的唯一所有者：消抖、长短按判定都在这里，对外只发布语义事件。
  * 依赖 board_init() 已完成(拿 board_btn_key_pressed()/board_btn_boot_pressed())。
  *
- * 语义(docs/coding-standards.md 第6节):
- *   KEY 短按 -> NEXT     KEY 长按 -> VOICE
- *   BOOT 短按 -> ACTION  BOOT 长按 -> BACK (由上层按当前上下文解读为"返回"或"取消")
+ * 语义(docs/coding-standards.md 第6节 / voice-agent-design 第9.4节):
+ *   KEY 短按 -> NEXT；KEY 长按暂不发布用户事件
+ *   BOOT 短按 -> ACTION；BOOT 长按 -> BACK（上层按上下文解读为取消）
  * 手势只在按键释放(短按)或达到长按阈值(长按)时发布一次；长按成立后释放不再补发短按。
  *
  * 任务: input_task, 栈2048, 优先级4 (登记于 docs/coding-standards.md 第7节)

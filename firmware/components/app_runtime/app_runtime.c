@@ -2,6 +2,7 @@
 
 #include <inttypes.h>
 
+#include "agent_runtime.h"
 #include "asr_client.h"
 #include "audio_pipeline.h"
 #include "battery.h"
@@ -15,6 +16,7 @@
 #include "esp_system.h"
 #include "input_manager.h"
 #include "llm_provider.h"
+#include "web_client.h"
 #include "net_manager.h"
 #include "rtc_pcf85063.h"
 #include "sensor_shtc3.h"
@@ -24,6 +26,7 @@
 #include "tts_client.h"
 #include "ui_manager.h"
 #include "ui_pages.h"
+#include "voice_assistant.h"
 #include "weather_client.h"
 
 static const char *TAG = "app_runtime";
@@ -65,30 +68,33 @@ static void start_network(const app_runtime_config_t *cfg)
     log_if_failed(weather_client_init(cfg->qweather_api_key, cfg->qweather_api_host, cfg->qweather_location),
                   "天气客户端启动");
 
-    /* P5.0 云API客户端：ASR/TTS固定走SiliconFlow；LLM按cfg->use_deepseek_llm配置切换，
-     * 只改配置不改代码(docs/voice-agent-design.md 5.1节要求) */
+    /* P5.0 云API客户端：ASR/TTS固定走SiliconFlow；LLM可选DeepSeek直连，
+     * 否则使用配置给定的SiliconFlow模型，不把模型名硬编码在运行时。 */
     log_if_failed(asr_client_init(cfg->siliconflow_api_key), "ASR客户端启动");
     log_if_failed(tts_client_init(cfg->siliconflow_api_key), "TTS客户端启动");
     if (cfg->use_deepseek_llm) {
         log_if_failed(llm_provider_init(LLM_PROVIDER_DEEPSEEK, cfg->deepseek_api_key, "deepseek-chat"),
                       "LLM客户端启动(DeepSeek)");
     } else {
-        log_if_failed(llm_provider_init(LLM_PROVIDER_SILICONFLOW, cfg->siliconflow_api_key, "Qwen/Qwen3-8B"),
+        log_if_failed(llm_provider_init(LLM_PROVIDER_SILICONFLOW, cfg->siliconflow_api_key,
+                                        cfg->siliconflow_llm_model),
                       "LLM客户端启动(SiliconFlow)");
     }
+    if (cfg->jina_api_key && cfg->jina_api_key[0]) {
+        log_if_failed(web_client_init(cfg->jina_api_key), "网页客户端启动");
+    }
 }
-
 esp_err_t app_runtime_start(const app_runtime_config_t *cfg)
 {
     ESP_RETURN_ON_FALSE(cfg, ESP_ERR_INVALID_ARG, TAG, "cfg is NULL");
 
-    /* 硬件初始化失败无法继续，此处允许 ESP_ERROR_CHECK (规范第5节) */
-    ESP_ERROR_CHECK(board_init());
-    ESP_ERROR_CHECK(st7305_init());
-    ESP_ERROR_CHECK(rtc_pcf85063_init());
-    ESP_ERROR_CHECK(shtc3_init());
-    ESP_ERROR_CHECK(battery_init());
-    ESP_ERROR_CHECK(sys_state_init());
+    /* 板级硬件失败不可恢复：返回给 app_main，由其唯一决定是否 abort */
+    ESP_RETURN_ON_ERROR(board_init(), TAG, "board_init");
+    ESP_RETURN_ON_ERROR(st7305_init(), TAG, "st7305_init");
+    ESP_RETURN_ON_ERROR(rtc_pcf85063_init(), TAG, "rtc_pcf85063_init");
+    ESP_RETURN_ON_ERROR(shtc3_init(), TAG, "shtc3_init");
+    ESP_RETURN_ON_ERROR(battery_init(), TAG, "battery_init");
+    ESP_RETURN_ON_ERROR(sys_state_init(), TAG, "sys_state_init");
 
     /* 以下均为可选外设/后台服务，失败降级不阻断启动 */
     log_if_failed(storage_sd_init(), "SD卡挂载");
@@ -96,15 +102,19 @@ esp_err_t app_runtime_start(const app_runtime_config_t *cfg)
     log_if_failed(env_logger_init(), "环境记录任务启动");
     log_if_failed(audio_pipeline_init(), "音频链路初始化(P5.1)");
 
-    ESP_ERROR_CHECK(input_manager_init());
-    ESP_ERROR_CHECK(ui_manager_init());
-    ESP_ERROR_CHECK(ui_manager_register_page(page_home_get()));
-    ESP_ERROR_CHECK(ui_manager_register_page(page_env_monitor_get()));
-    ESP_ERROR_CHECK(ui_manager_register_page(page_quota_get()));
-    ESP_ERROR_CHECK(ui_manager_register_page(page_weather_get()));
-    ESP_ERROR_CHECK(ui_manager_start());
+    ESP_RETURN_ON_ERROR(input_manager_init(), TAG, "input_manager_init");
+    ESP_RETURN_ON_ERROR(ui_manager_init(), TAG, "ui_manager_init");
+    ESP_RETURN_ON_ERROR(ui_manager_register_page(page_jarvis_get()), TAG, "register jarvis");
+    ESP_RETURN_ON_ERROR(ui_manager_register_page(page_home_get()), TAG, "register home");
+    ESP_RETURN_ON_ERROR(ui_manager_register_page(page_weather_get()), TAG, "register weather");
+    ESP_RETURN_ON_ERROR(ui_manager_register_page(page_env_monitor_get()), TAG, "register env");
+    ESP_RETURN_ON_ERROR(ui_manager_register_page(page_quota_get()), TAG, "register quota");
+    ESP_RETURN_ON_ERROR(ui_manager_start(), TAG, "ui_manager_start");
 
     start_network(cfg);
+    log_if_failed(agent_runtime_init(), "个人智能体运行时启动");
+    /* 云客户端和个人智能体就绪后再启动语音闭环；音频未就绪则只降级 */
+    log_if_failed(voice_assistant_start(), "语音助手启动");
     ESP_LOGI(TAG, "启动完成 | 堆剩余 %" PRIu32 "B(历史最低%" PRIu32 "B) | PSRAM剩余%" PRIu32 "B(历史最低%" PRIu32 "B)",
              (uint32_t)esp_get_free_heap_size(), (uint32_t)esp_get_minimum_free_heap_size(),
              (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
