@@ -9,7 +9,7 @@
 
 /*
  * Jarvis 默认页：专属机械面甲头像 + 极短状态。
- * 只读 sys_state 快照；取消请求经 sys_state_request_voice_cancel() 提交。
+ * 只读 sys_state 快照；全局语音取消由 ui_manager 提交。
  * 样式原则见 docs/voice-agent-design.md 第9节——不固定最终美术，只保证可辨识。
  */
 
@@ -171,26 +171,12 @@ static void on_tick(void)
     }
 }
 
-static bool on_key(ui_key_event_t evt)
-{
-    /* 仅在语音活动中把 BACK 解释为取消；普通待命不占 BOOT */
-    if (evt == UI_KEY_BACK) {
-        sys_state_snapshot_t snap;
-        sys_state_get_snapshot(&snap);
-        if (snap.voice_phase != SYS_VOICE_IDLE) {
-            sys_state_request_voice_cancel();
-            return true;
-        }
-    }
-    return false;
-}
-
 static const ui_page_t s_page = {
     .name = "jarvis",
     .on_enter = on_enter,
     .on_exit = NULL,
     .on_tick = on_tick,
-    .on_key = on_key,
+    .on_key = NULL,
 };
 
 const ui_page_t *page_jarvis_get(void)
