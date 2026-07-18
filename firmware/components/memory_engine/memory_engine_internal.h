@@ -42,3 +42,9 @@ esp_err_t memory_store_append_event(const memory_record_t *record);
 esp_err_t memory_store_append_tombstone(memory_id_t id);
 esp_err_t memory_profile_restore(memory_state_t *state);
 esp_err_t memory_profile_write(memory_state_t *state);
+
+/* memory_writer：把热路径SD写收敛到单任务有界队列，避免阻塞agent任务。 */
+/* 以下两个enqueue必须在持有 memory_engine s_lock 时调用（靠外层锁串行化）。 */
+esp_err_t memory_writer_start(void);  /* 仅SD已挂载、恢复完成后由memory_engine_init调用 */
+esp_err_t memory_writer_enqueue_line(const char *rel_path, const char *line);
+esp_err_t memory_writer_enqueue_replace(const char *rel_path, const void *data, size_t len);

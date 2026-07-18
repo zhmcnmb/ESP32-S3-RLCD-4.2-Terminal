@@ -18,7 +18,7 @@
 
 
 static const char *TAG = "agent_tools";
-#define AGENT_ACTIVE_TOOL_MAX 10
+#define AGENT_ACTIVE_TOOL_MAX 13
 typedef esp_err_t (*agent_tool_fn_t)(const cJSON *args, cJSON **result);
 
 typedef struct {
@@ -42,13 +42,17 @@ static esp_err_t tool_device_status(const cJSON *args, cJSON **result)
     if (!json) {
         return ESP_ERR_NO_MEM;
     }
-    cJSON_AddBoolToObject(json, "time_valid", snapshot.time_valid);
-    cJSON_AddBoolToObject(json, "wifi_connected", snapshot.wifi_connected);
-    cJSON_AddBoolToObject(json, "sd_mounted", snapshot.sd_mounted);
-    cJSON_AddBoolToObject(json, "battery_available", snapshot.battery_ok);
+    bool added = cJSON_AddBoolToObject(json, "time_valid", snapshot.time_valid)
+                 && cJSON_AddBoolToObject(json, "wifi_connected", snapshot.wifi_connected)
+                 && cJSON_AddBoolToObject(json, "sd_mounted", snapshot.sd_mounted)
+                 && cJSON_AddBoolToObject(json, "battery_available", snapshot.battery_ok);
     if (snapshot.battery_ok) {
-        cJSON_AddNumberToObject(json, "battery_percent", snapshot.battery_percent);
-        cJSON_AddBoolToObject(json, "battery_charging", snapshot.battery_charging);
+        added = added && cJSON_AddNumberToObject(json, "battery_percent", snapshot.battery_percent)
+                && cJSON_AddBoolToObject(json, "battery_charging", snapshot.battery_charging);
+    }
+    if (!added) {
+        cJSON_Delete(json);
+        return ESP_ERR_NO_MEM;
     }
     *result = json;
     return ESP_OK;
@@ -65,11 +69,11 @@ static esp_err_t tool_environment(const cJSON *args, cJSON **result)
     if (!json) {
         return ESP_ERR_NO_MEM;
     }
-    cJSON_AddBoolToObject(json, "available", snapshot.env_ok);
-    cJSON_AddNumberToObject(json, "history_samples", snapshot.env_history_count);
+    bool added = cJSON_AddBoolToObject(json, "available", snapshot.env_ok)
+                 && cJSON_AddNumberToObject(json, "history_samples", snapshot.env_history_count);
     if (snapshot.env_ok) {
-        cJSON_AddNumberToObject(json, "temperature_c", snapshot.temperature);
-        cJSON_AddNumberToObject(json, "humidity_percent", snapshot.humidity);
+        added = added && cJSON_AddNumberToObject(json, "temperature_c", snapshot.temperature)
+                && cJSON_AddNumberToObject(json, "humidity_percent", snapshot.humidity);
     }
     if (snapshot.env_history_count > 0) {
         float min_temp = snapshot.env_history[0].temperature;
@@ -79,8 +83,12 @@ static esp_err_t tool_environment(const cJSON *args, cJSON **result)
             min_temp = value < min_temp ? value : min_temp;
             max_temp = value > max_temp ? value : max_temp;
         }
-        cJSON_AddNumberToObject(json, "history_min_temperature_c", min_temp);
-        cJSON_AddNumberToObject(json, "history_max_temperature_c", max_temp);
+        added = added && cJSON_AddNumberToObject(json, "history_min_temperature_c", min_temp)
+                && cJSON_AddNumberToObject(json, "history_max_temperature_c", max_temp);
+    }
+    if (!added) {
+        cJSON_Delete(json);
+        return ESP_ERR_NO_MEM;
     }
     *result = json;
     return ESP_OK;
@@ -97,12 +105,16 @@ static esp_err_t tool_weather(const cJSON *args, cJSON **result)
     if (!json) {
         return ESP_ERR_NO_MEM;
     }
-    cJSON_AddBoolToObject(json, "available", snapshot.weather_available);
+    bool added = cJSON_AddBoolToObject(json, "available", snapshot.weather_available);
     if (snapshot.weather_available) {
-        cJSON_AddNumberToObject(json, "temperature_c", snapshot.weather_temperature);
-        cJSON_AddNumberToObject(json, "humidity_percent", snapshot.weather_humidity);
-        cJSON_AddStringToObject(json, "condition", snapshot.weather_condition);
-        cJSON_AddStringToObject(json, "wind", snapshot.weather_wind);
+        added = added && cJSON_AddNumberToObject(json, "temperature_c", snapshot.weather_temperature)
+                && cJSON_AddNumberToObject(json, "humidity_percent", snapshot.weather_humidity)
+                && cJSON_AddStringToObject(json, "condition", snapshot.weather_condition)
+                && cJSON_AddStringToObject(json, "wind", snapshot.weather_wind);
+    }
+    if (!added) {
+        cJSON_Delete(json);
+        return ESP_ERR_NO_MEM;
     }
     *result = json;
     return ESP_OK;
@@ -167,7 +179,12 @@ static esp_err_t tool_web_search(const cJSON *args, cJSON **result)
             free(sources);
             return ESP_ERR_NO_MEM;
         }
-        cJSON_AddItemToArray(array, source);
+        if (!cJSON_AddItemToArray(array, source)) {
+            cJSON_Delete(source);
+            cJSON_Delete(json);
+            free(sources);
+            return ESP_ERR_NO_MEM;
+        }
     }
     free(sources);
     *result = json;
@@ -284,6 +301,9 @@ const llm_tool_def_t *agent_tools_get_definitions(int *out_count)
     int memory_count = 0;
     const llm_tool_def_t *memory_tools = agent_memory_tools_get_definitions(&memory_count);
     for (int i = 0; i < memory_count; i++) s_active_definitions[count++] = memory_tools[i];
+    int scheduler_count = 0;
+    const llm_tool_def_t *scheduler_tools = agent_scheduler_tools_get_definitions(&scheduler_count);
+    for (int i = 0; i < scheduler_count; i++) s_active_definitions[count++] = scheduler_tools[i];
     if (out_count) *out_count = count;
     return s_active_definitions;
 }
@@ -316,7 +336,8 @@ esp_err_t agent_tools_execute(const llm_tool_call_t *call, char *out, size_t out
     }
     const agent_tool_t *tool = find_tool(call->name);
     bool memory_tool = agent_memory_tools_handles(call->name);
-    if (!tool && !memory_tool) {
+    bool scheduler_tool = agent_scheduler_tools_handles(call->name);
+    if (!tool && !memory_tool && !scheduler_tool) {
         write_error(out, out_len, "工具未注册");
         return ESP_OK;
     }
@@ -329,7 +350,8 @@ esp_err_t agent_tools_execute(const llm_tool_call_t *call, char *out, size_t out
     }
     cJSON *result = NULL;
     esp_err_t err = tool ? tool->execute(args, &result)
-                         : agent_memory_tools_execute(call->name, args, &result);
+        : memory_tool ? agent_memory_tools_execute(call->name, args, &result)
+        : agent_scheduler_tools_execute(call->name, args, &result);
     cJSON_Delete(args);
     if (err != ESP_OK || !result) {
         write_error(out, out_len, "参数校验失败");

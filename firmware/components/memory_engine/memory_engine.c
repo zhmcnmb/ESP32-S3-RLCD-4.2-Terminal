@@ -156,14 +156,22 @@ esp_err_t memory_engine_init(void)
         return ESP_OK;
     }
     esp_err_t err = memory_store_restore(&s_state);
-    if (err == ESP_OK) {
+    if (err != ESP_OK) {
+        memset(&s_state, 0, sizeof(s_state));
+        unlock_state();
+        return err;
+    }
+    /* 恢复完成后再启动writer；启动失败视同SD缺失降级 */
+    esp_err_t werr = memory_writer_start();
+    if (werr != ESP_OK) {
+        ESP_LOGW(TAG, "writer启动失败，记忆降级: %s", esp_err_to_name(werr));
+        /* available保持false，短会话不受影响 */
+    } else {
         s_state.available = true;
         ESP_LOGI(TAG, "已恢复%u条长期记忆", (unsigned)s_state.count);
-    } else {
-        memset(&s_state, 0, sizeof(s_state));
     }
     unlock_state();
-    return err;
+    return ESP_OK;
 }
 
 bool memory_engine_is_available(void)

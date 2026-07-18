@@ -144,16 +144,19 @@ typedef struct {
 
 | 任务 | 栈 | 优先级 | 组件 |
 |---|---|---|---|
-| main_task | 默认 | 1 | app_main（启动后即退出） |
+| main_task | 4096 | 1 | app_main（启动后即退出；SD恢复+agent初始化调用链需保留足够栈余量） |
 | input_task | 2048 | 4 | input_manager（30ms轮询KEY/BOOT，消抖+长短按判定） |
 | ui_task | 4096 | 5 | ui_manager（消费input_manager语义事件；无输入时1s周期tick） |
 | sys_state_task | 3072 | 2 | sys_state（10s轮询瞬时温湿度/电池/WiFi/SD状态，写入共享快照） |
 | env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV，同步推送sys_state） |
-| claude_quota_task | 4096 | 3 | claude_quota_client（60s轮询Mac桥接服务，mDNS+HTTP+cJSON解析，推送sys_state） |
-| weather_task | 8192 | 3 | weather_client（15分钟直连QWeather，TLS+gzip+cJSON解析，经cloud_transport，推送sys_state） |
-| wakeword_task | 8192 | 5(CPU1) | wakeword（AFE feed+fetch合并task，WakeNet推理+VAD检测+语音段缓冲；固定CPU1，避免与CPU0的WiFi/lwIP协议栈争抢触发watchdog——真机踩过CPU0饿死IDLE0的坑） |
+| claude_quota_task | 4096 | 3 | claude_quota_client（USB供电60s、仅电池300s轮询Mac桥接服务，mDNS+HTTP+cJSON解析，推送sys_state） |
+| weather_task | 8192 | 3 | weather_client（USB供电15分钟、仅电池30分钟直连QWeather，TLS+gzip+cJSON解析，经cloud_transport，推送sys_state） |
+| wakeword_task | 8192 | 5(CPU1) | wakeword（AFE feed+fetch合并task，MultiNet命令词+VAD检测+语音段缓冲；固定CPU1，避免与CPU0的WiFi/lwIP协议栈争抢触发watchdog——真机踩过CPU0饿死IDLE0的坑） |
 | voice_assistant_task | 12288 | 4(CPU0) | voice_assistant（单轮 Wake→ASR→Chat→TTS 编排+状态机；固定CPU0避免与CPU1的wakeword prio5互抢被饿死；处理轮次期间停 wakeword；拆分 voice_wav.c/voice_tts_stream.c 压红线） |
 | tts_playback_task | 4096 | 4(CPU0) | voice_tts_stream（TTS流式播放：从环形缓冲取PCM写codec，与网络接收解耦，边收边放降低感知延迟；每轮临时创建，播完自行退出） |
+| reply_tts_task | 6144 | 4(CPU0) | voice_assistant（TTS流式合成整句转发任务，voice_tts_stream.c；每轮临时创建，播完自行退出） |
+| memory_store_task | 4096 | 2 | memory_engine（热路径SD写收敛：8深度PSRAM有界队列+单任务串行落盘，避免agent任务被FATFS阻塞；失败仅告警，重启回放兜底） |
+| scheduler_task | 4096 | 3 | scheduler（每秒检查16条以内的提醒；经sys_state单槽邮箱投递，SD缺失时RAM降级） |
 | *(后续新增在此登记)* | | | |
 
 ## 8. 云端与持久化约定

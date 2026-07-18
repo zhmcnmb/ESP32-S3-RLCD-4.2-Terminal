@@ -14,7 +14,8 @@
 
 static const char *TAG = "weather_client";
 
-#define POLL_INTERVAL_MS (15 * 60 * 1000) /* 天气变化慢，15分钟一次足够 */
+#define POLL_INTERVAL_MS (15 * 60 * 1000)      /* 天气变化慢，15分钟一次足够 */
+#define POLL_INTERVAL_BATTERY_MS (30 * 60 * 1000) /* 电池供电(未接USB)时降频到30分钟 */
 #define RESP_BUF_SIZE 1024 /* QWeather /now 响应解压后实测约450字节，留足余量 */
 
 static char s_api_key[64];
@@ -106,17 +107,26 @@ static void poll_once(void)
     }
 }
 
+/* 电池供电(未接USB)时降低轮询频率省电；恢复USB供电自动回到正常档 */
+static uint32_t poll_delay_ms(void)
+{
+    sys_state_snapshot_t snap;
+    sys_state_get_snapshot(&snap);
+    return (snap.battery_ok && !snap.battery_charging) ? POLL_INTERVAL_BATTERY_MS : POLL_INTERVAL_MS;
+}
+
 static void weather_task(void *arg)
 {
     (void)arg;
     for (;;) {
         poll_once();
-        vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(poll_delay_ms()));
     }
 }
 
 esp_err_t weather_client_init(const char *api_key, const char *api_host, const char *location)
 {
+    if (s_lock) return ESP_OK;
     if (!api_key || !api_key[0] || !api_host || !api_host[0] || !location || !location[0]) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -135,6 +145,8 @@ esp_err_t weather_client_init(const char *api_key, const char *api_host, const c
     BaseType_t ok = xTaskCreate(weather_task, "weather_task", 8192, NULL, 3, NULL);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "任务创建失败");
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
         return ESP_ERR_NO_MEM;
     }
 

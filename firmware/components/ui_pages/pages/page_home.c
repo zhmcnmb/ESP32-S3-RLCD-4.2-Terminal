@@ -1,4 +1,5 @@
 #include <stdio.h>
+#include <string.h>
 #include <time.h>
 
 #include "display_st7305.h"
@@ -14,10 +15,9 @@
  *
  * 布局(400×300):
  *   页头        y=0..34    状态图标(无重复标题)
- *   时钟区      y=48..112  HH:MM 超大字 + 秒
- *   日期/校时   y=128..148  仅异常时显示"未校时"
- *   分隔线      y=168
- *   温湿度摘要  y=184..228 两列开放式指标
+ *   时钟区      y=56..120  HH:MM 超大字 + 秒
+ *   日期/校时   y=136..174 仅异常时显示"未校时"
+ *   温湿度摘要  y=216..248 两列开放式指标
  */
 
 static const char *TAG = "page_home";
@@ -31,38 +31,48 @@ static void draw_time_section(const struct tm *t, const sys_state_snapshot_t *sn
 
     /* 时钟独占上半屏：大数字本身承担主视觉，不再放进卡片或取景框。 */
     snprintf(buf, sizeof(buf), "%02d:%02d", t->tm_hour, t->tm_min);
-    int w = 5 * 8 * 8;
-    int x = (400 - w) / 2;
-    st7305_draw_text(x, 48, 8, buf, true);
+    st7305_draw_text(40, 56, 8, buf, true);
 
     snprintf(buf, sizeof(buf), "%02d", t->tm_sec);
-    st7305_draw_text(x + w + 6, 96, 2, buf, true);
+    st7305_draw_text(366, 104, 2, buf, true);
 
     char date_buf[48];
-    snprintf(date_buf, sizeof(date_buf), "%d年%d月%d日 %s",
-             t->tm_year + 1900, t->tm_mon + 1, t->tm_mday, WEEKDAY_CN[t->tm_wday % 7]);
-    st7305_draw_utf8((400 - st7305_utf8_width(1, date_buf)) / 2, 128, 1, date_buf, true);
+    snprintf(date_buf, sizeof(date_buf), "%d月%d日 %s",
+             t->tm_mon + 1, t->tm_mday, WEEKDAY_CN[t->tm_wday % 7]);
+    st7305_draw_utf8((400 - st7305_utf8_width(1, date_buf)) / 2, 136, 1, date_buf, true);
 
     if (!snap->time_valid) {
         const char *bad = "未校时";
         int bw = st7305_utf8_width(1, bad);
         int bx = (400 - (bw + 16)) / 2;
-        st7305_fill_rect(bx, 148, bw + 16, 18, true);
-        st7305_draw_utf8(bx + 8, 149, 1, bad, false);
+        st7305_fill_rect(bx, 156, bw + 16, 18, true);
+        st7305_draw_utf8(bx + 8, 157, 1, bad, false);
     }
 }
 
-/* 反白标签把指标分组，数值保持开放排版，避免用横线和外框分割页面。 */
-static void draw_metric(int x, const char *label, bool ok, const char *value, const char *unit)
+/* 图标承担指标语义，开放数值区保留给环境读数。 */
+static void draw_metric(int x, bool is_temp, bool ok, const char *value)
 {
-    int label_w = st7305_utf8_width(1, label);
-    st7305_fill_rect(x, 180, label_w + 16, 18, true);
-    st7305_draw_utf8(x + 8, 181, 1, label, false);
-
     const char *v = ok ? value : "--";
-    st7305_draw_text(x, 206, 4, v, true);
-    int value_w = st7305_utf8_width(4, v);
-    st7305_draw_utf8(x + value_w + 6, 222, 1, unit, true);
+    int value_x = x + (is_temp ? 22 : 20);
+
+    if (is_temp) {
+        icon_thermometer(x, 220);
+    } else {
+        icon_droplet(x, 220);
+    }
+    st7305_draw_text(value_x, 216, 4, v, true);
+
+    if (!ok) {
+        return;
+    }
+
+    int value_end = value_x + 32 * (int)strlen(v);
+    if (is_temp) {
+        ui_v2_draw_temp_unit(value_end + 8, 216);
+    } else {
+        st7305_draw_text(value_end + 6, 232, 2, "%", true);
+    }
 }
 
 static void draw(void)
@@ -78,12 +88,13 @@ static void draw(void)
     localtime_r(&now, &t);
     draw_time_section(&t, &snap);
 
+    ui_v2_draw_dots_divider(196);
 
     char temp_buf[16], hum_buf[16];
     snprintf(temp_buf, sizeof(temp_buf), "%.1f", snap.temperature);
     snprintf(hum_buf, sizeof(hum_buf), "%.0f", snap.humidity);
-    draw_metric(24, "温度", snap.env_ok, temp_buf, "C");
-    draw_metric(224, "湿度", snap.env_ok, hum_buf, "%");
+    draw_metric(60, true, snap.env_ok, temp_buf);
+    draw_metric(268, false, snap.env_ok, hum_buf);
 
     esp_err_t err = st7305_flush();
     if (err != ESP_OK) {

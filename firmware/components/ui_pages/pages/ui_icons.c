@@ -98,6 +98,15 @@ void icon_droplet(int x, int y)
     st7305_draw_round_rect(x, y + 6, 12, 10, 5, ICON_BLACK);
 }
 
+void icon_wind(int x, int y)
+{
+    st7305_draw_line(x, y + 3, x + 13, y + 3, ICON_BLACK);
+    st7305_draw_line(x + 13, y + 3, x + 16, y + 1, ICON_BLACK);
+    st7305_draw_line(x, y + 8, x + 17, y + 8, ICON_BLACK);
+    st7305_draw_line(x, y + 13, x + 11, y + 13, ICON_BLACK);
+    st7305_draw_line(x + 11, y + 13, x + 14, y + 11, ICON_BLACK);
+}
+
 /* 云朵轮廓: 底部长圆角矩形 + 顶部两个凸起，近似云的锯齿感 */
 static void draw_cloud_body(int x, int y)
 {

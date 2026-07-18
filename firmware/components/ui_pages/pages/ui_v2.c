@@ -32,3 +32,29 @@ void ui_v2_draw_empty_state(int y, const char *primary, const char *secondary)
         st7305_draw_utf8((400 - st7305_utf8_width(1, secondary)) / 2, y + 40, 1, secondary, true);
     }
 }
+
+void ui_v2_draw_dots_divider(int y)
+{
+    st7305_fill_rect(186, y, 3, 3, true);
+    st7305_fill_rect(198, y, 3, 3, true);
+    st7305_fill_rect(210, y, 3, 3, true);
+}
+
+int ui_v2_draw_temp_unit(int x, int y)
+{
+    st7305_draw_round_rect(x, y, 8, 8, 4, true);
+    st7305_draw_text(x + 11, y, 2, "C", true);
+    return x + 27;
+}
+
+void ui_v2_draw_status_badge(const char *text)
+{
+    if (!text) {
+        return;
+    }
+
+    int w = st7305_utf8_width(1, text) + 16;
+    int x = 400 - MARGIN - w;
+    st7305_fill_rect(x, 34, w, 18, true);
+    st7305_draw_utf8(x + 8, 35, 1, text, false);
+}

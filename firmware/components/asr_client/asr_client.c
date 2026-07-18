@@ -73,36 +73,64 @@ static esp_err_t on_response_chunk(const char *data, size_t len, void *ctx)
 static esp_err_t read_wav_to_psram(const char *rel_path,
                                    uint8_t **out_buf, size_t *out_len)
 {
-    uint8_t *buf = heap_caps_malloc(MAX_WAV_SIZE, MALLOC_CAP_SPIRAM);
-    if (!buf) {
-        return ESP_ERR_NO_MEM;
-    }
+    if (!rel_path || !out_buf || !out_len) return ESP_ERR_INVALID_ARG;
+    uint32_t file_size = 0;
+    esp_err_t size_err = storage_sd_get_file_size(rel_path, &file_size);
+    if (size_err != ESP_OK) return size_err;
+    if (file_size == 0 || file_size > MAX_WAV_SIZE) return ESP_ERR_INVALID_SIZE;
+    uint8_t *buf = heap_caps_malloc(file_size, MALLOC_CAP_SPIRAM);
+    if (!buf) return ESP_ERR_NO_MEM;
 
     size_t total = 0;
-    while (total < MAX_WAV_SIZE) {
-        size_t want = MAX_WAV_SIZE - total;
-        if (want > READ_CHUNK_SIZE) {
-            want = READ_CHUNK_SIZE;
-        }
+    while (total < file_size) {
+        size_t want = file_size - total;
+        if (want > READ_CHUNK_SIZE) want = READ_CHUNK_SIZE;
         int n = storage_sd_read_chunk(rel_path, (uint32_t)total, buf + total, want);
         if (n <= 0) {
-            break;   /* EOF或读失败 */
+            heap_caps_free(buf);
+            return ESP_FAIL;
         }
         total += (size_t)n;
     }
-
-    if (total == 0) {
-        /* 首次read_chunk就返回0 → 文件不存在或SD未挂载 */
-        heap_caps_free(buf);
-        return ESP_ERR_NOT_FOUND;
-    }
-
     *out_buf = buf;
     *out_len = total;
     return ESP_OK;
 }
 
 /* ---------- 发送请求、收集响应、解析JSON ---------- */
+
+/* 模型文本超过调用方缓冲时，不能在UTF-8连续字节中间截断。 */
+static size_t fit_utf8_prefix(const char *text, size_t len, size_t out_size)
+{
+    if (len < out_size) return len;
+    size_t keep = out_size - 1;
+    while (keep > 0 && (((unsigned char)text[keep] & 0xc0) == 0x80)) {
+        keep--;
+    }
+    return keep;
+}
+
+static esp_err_t parse_response(char *response, char *out_text, size_t out_text_size)
+{
+    cJSON *root = cJSON_Parse(response);
+    if (!root) {
+        ESP_LOGE(TAG, "response JSON parse failed");
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    cJSON *text_item = cJSON_GetObjectItem(root, "text");
+    if (!text_item || !cJSON_IsString(text_item)) {
+        ESP_LOGE(TAG, "response missing \"text\" field");
+        cJSON_Delete(root);
+        return ESP_ERR_INVALID_RESPONSE;
+    }
+    size_t text_len = fit_utf8_prefix(text_item->valuestring, strlen(text_item->valuestring),
+                                      out_text_size);
+    memcpy(out_text, text_item->valuestring, text_len);
+    out_text[text_len] = '\0';
+    ESP_LOGI(TAG, "识别文本(%dB): '%s'", (int)text_len, out_text);
+    cJSON_Delete(root);
+    return ESP_OK;
+}
 
 static esp_err_t send_and_parse(const uint8_t *body, size_t body_len,
                                 const volatile bool *cancel_flag, int *out_status,
@@ -125,11 +153,14 @@ static esp_err_t send_and_parse(const uint8_t *body, size_t body_len,
         on_response_chunk, &ctx,
         cancel_flag, out_status);
 
-    /* 可重试的状态码：429/503/504，重试一次 */
-    if (err == ESP_ERR_HTTP_CONNECT &&
-        (*out_status == 429 || *out_status == 503 || *out_status == 504)) {
-        ESP_LOGW(TAG, "HTTP %d, retrying once", *out_status);
+    /* 重试条件放宽为"非成功且非用户取消"：既覆盖429/503/504等HTTP错误状态，也覆盖
+     * 网络层失败(如观测到的ESP_FAIL/status=0 15s挂死)——WAV已在SD，重试只是重新拼
+     * multipart上传，无副作用；ESP_ERR_NOT_FINISHED是用户主动取消，不重试。 */
+    if (err != ESP_OK && err != ESP_ERR_NOT_FINISHED) {
+        ESP_LOGW(TAG, "转写请求失败(%s, status=%d), retrying once", esp_err_to_name(err),
+                 *out_status);
         ctx.len = 0;
+        *out_status = 0;
         err = cloud_transport_post_stream(
             ASR_URL, s_api_key, content_type,
             body, body_len,
@@ -142,37 +173,11 @@ static esp_err_t send_and_parse(const uint8_t *body, size_t body_len,
         return err;
     }
 
-    /* 截断到实际有效数据长度，加'\0' */
+    /* 截断到实际有效数据长度，加'\0'后交给JSON解析。 */
     ctx.buf[ctx.len] = '\0';
-
-    /* 解析JSON取"text"字段 */
-    cJSON *root = cJSON_Parse(ctx.buf);
-    if (!root) {
-        ESP_LOGE(TAG, "response JSON parse failed");
-        heap_caps_free(ctx.buf);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-
-    cJSON *text_item = cJSON_GetObjectItem(root, "text");
-    if (!text_item || !cJSON_IsString(text_item)) {
-        ESP_LOGE(TAG, "response missing \"text\" field");
-        cJSON_Delete(root);
-        heap_caps_free(ctx.buf);
-        return ESP_ERR_INVALID_RESPONSE;
-    }
-
-    /* 复制识别结果到输出缓冲 */
-    size_t text_len = strlen(text_item->valuestring);
-    if (text_len >= out_text_size) {
-        text_len = out_text_size - 1;
-    }
-    memcpy(out_text, text_item->valuestring, text_len);
-    out_text[text_len] = '\0';
-    ESP_LOGI(TAG, "识别文本(%dB): '%s'", (int)text_len, out_text);
-
-    cJSON_Delete(root);
+    err = parse_response(ctx.buf, out_text, out_text_size);
     heap_caps_free(ctx.buf);
-    return ESP_OK;
+    return err;
 }
 
 /* ========== 公开接口 ========== */
@@ -199,7 +204,7 @@ esp_err_t asr_client_transcribe(const char *wav_rel_path, char *out_text,
                                 const volatile bool *cancel_flag, int *out_status)
 {
     /* 参数校验 */
-    if (!s_initialized || !wav_rel_path || !out_text || out_text_size == 0) {
+    if (!s_initialized || !wav_rel_path || !out_text || out_text_size == 0 || !out_status) {
         if (out_status) *out_status = 0;
         return ESP_ERR_INVALID_ARG;
     }

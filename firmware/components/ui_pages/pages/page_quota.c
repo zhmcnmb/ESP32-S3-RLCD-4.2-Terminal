@@ -34,11 +34,11 @@ static void draw_badge(int x, int y, const char *label)
     st7305_draw_text(x + (w - tw) / 2, y + (h - 16) / 2, 2, label, false);
 }
 
-/* 8段离散块进度条，符合单色点阵语言；用量>=80%额外画"!"标记，不依赖颜色 */
+/* 10段离散块让每一格直观对应10%用量；高用量仅用符号提示，不依赖颜色。 */
 static void draw_segments(int x, int y, int w, int h, float fraction, bool warn)
 {
-    const int segs = 8;
-    const int gap = 3;
+    const int segs = 10;
+    const int gap = 4;
     int seg_w = (w - gap * (segs - 1)) / segs;
     int filled = (int)(fraction * segs + 0.5f);
     if (filled > segs) {
@@ -53,7 +53,7 @@ static void draw_segments(int x, int y, int w, int h, float fraction, bool warn)
         }
     }
     if (warn) {
-        st7305_draw_text(x + w + 10, y + 4, 2, "!", true);
+        st7305_draw_text(x + w + 12, y - 5, 3, "!", true);
     }
 }
 
@@ -80,14 +80,13 @@ static void draw_window(int y, const char *label, float used, time_t resets_at, 
 
     char pct[8];
     snprintf(pct, sizeof(pct), "%.0f%%", used * 100);
-    st7305_draw_text(20, y + 32, 5, pct, true);
-
-    /* 进度条贴齐主内容宽度；它表达配额消耗，不作为装饰性分隔线。 */
-    draw_segments(20, y + 82, 340, 12, used, used >= 0.8f);
+    st7305_draw_text(76, y - 4, 5, pct, true);
 
     char remain[32];
     format_remaining(resets_at, now, remain, sizeof(remain));
-    st7305_draw_utf8(20, y + 104, 1, remain, true);
+    st7305_draw_utf8(380 - st7305_utf8_width(1, remain), y + 8, 1, remain, true);
+
+    draw_segments(20, y + 50, 316, 14, used, used >= 0.8f);
 }
 
 static void draw(void)
@@ -101,17 +100,12 @@ static void draw(void)
     bool has_data = snap.quota_updated_at != 0;
     bool stale = has_data && !snap.quota_available;
 
-    if (stale) {
-        const char *badge = "旧";
-        st7305_draw_utf8(400 - 40 - st7305_utf8_width(1, badge), 44, 1, badge, true);
-    } else if (!has_data && !snap.wifi_connected) {
-        const char *badge = "离线";
-        st7305_draw_utf8(400 - 40 - st7305_utf8_width(1, badge), 44, 1, badge, true);
-    }
+    ui_v2_draw_status_badge(stale ? "旧" : (!has_data && !snap.wifi_connected ? "离线" : NULL));
 
     if (has_data) {
-        draw_window(42, "5H", snap.quota_used_5h, snap.quota_resets_5h, snap.now);
-        draw_window(170, "7D", snap.quota_used_7d, snap.quota_resets_7d, snap.now);
+        draw_window(60, "5H", snap.quota_used_5h, snap.quota_resets_5h, snap.now);
+        ui_v2_draw_dots_divider(157);
+        draw_window(184, "7D", snap.quota_used_7d, snap.quota_resets_7d, snap.now);
     } else {
         /* Mac bridge 是本页唯一依赖；离线时独立降级，不提实现细节 */
         ui_v2_draw_empty_state(120, snap.wifi_connected ? "等待数据" : "离线", NULL);

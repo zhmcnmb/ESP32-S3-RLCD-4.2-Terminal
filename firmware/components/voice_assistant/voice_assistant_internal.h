@@ -34,3 +34,25 @@ esp_err_t va_tts_stream_init(void);
 /* 合成 text 并边收边放；返回时音频已放完(或被 cancel_flag 提前中止)。
  * out_status 透传 HTTP 状态码(可传 NULL) */
 esp_err_t va_tts_play(const char *text, const volatile bool *cancel_flag, int *out_status);
+
+/* 过滤 Markdown 记号后再流式播放；过滤缓存分配失败时返回ESP_ERR_NO_MEM，
+ * 绝不退回原文，以免把Markdown记号朗读出来。 */
+esp_err_t va_tts_play_clean(const char *text, const volatile bool *cancel_flag, int *out_status);
+
+/* 清洗Markdown强调/标题/代码记号(* ` # _)，避免TTS朗读出符号杂音；多字节UTF-8
+ * 字节不受影响(均<0x80，不与UTF-8连续字节混淆)，'-'保留以免破坏日期/负数等正常文本。
+ * out 至少 len 字节，返回写入 out 的字节数(<=len，不含结尾'\0'，调用方自行补)。 */
+size_t va_tts_strip_markdown(const char *src, size_t len, char *out);
+
+/* 将模型增量文本按句排队给 TTS；后台任务负责边接收边播放，调用方只传递片段。 */
+esp_err_t va_reply_stream_start(const volatile bool *cancel_flag);
+
+esp_err_t va_reply_stream_push_delta(const char *delta);
+bool va_reply_stream_has_content(void);
+esp_err_t va_reply_stream_finish(void);
+
+/* ---- voice_reminder.c：提醒播报的音频链路独占 ---- */
+typedef void (*va_reminder_transition_cb_t)(void);
+void va_reminder_play(va_reminder_transition_cb_t on_started,
+                      va_reminder_transition_cb_t on_finished,
+                      const volatile bool *cancel_flag);

@@ -34,7 +34,7 @@ static esp_err_t append_json(const char *path, cJSON *json)
     char *line = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
     if (!line) return ESP_ERR_NO_MEM;
-    esp_err_t err = storage_sd_append_line(path, line);
+    esp_err_t err = memory_writer_enqueue_line(path, line);
     free(line);
     return err;
 }
@@ -200,8 +200,13 @@ esp_err_t memory_store_append_event(const memory_record_t *record)
         cJSON_Delete(json);
         return ESP_ERR_NO_MEM;
     }
-    if (record->expires_at) cJSON_AddNumberToObject(json, "expires_at", (double)record->expires_at);
-    else cJSON_AddNullToObject(json, "expires_at");
+    bool expiry_added = record->expires_at
+                        ? cJSON_AddNumberToObject(json, "expires_at", (double)record->expires_at)
+                        : cJSON_AddNullToObject(json, "expires_at");
+    if (!expiry_added) {
+        cJSON_Delete(json);
+        return ESP_ERR_NO_MEM;
+    }
     return append_json(MEMORY_ENGINE_EVENT_PATH, json);
 }
 

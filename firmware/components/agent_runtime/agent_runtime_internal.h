@@ -43,3 +43,7 @@ void agent_memory_tools_prepare(const char *user_text);
 const llm_tool_def_t *agent_memory_tools_get_definitions(int *out_count);
 bool agent_memory_tools_handles(const char *name);
 esp_err_t agent_memory_tools_execute(const char *name, const cJSON *args, cJSON **out);
+void agent_scheduler_tools_prepare(const char *user_text);
+const llm_tool_def_t *agent_scheduler_tools_get_definitions(int *out_count);
+bool agent_scheduler_tools_handles(const char *name);
+esp_err_t agent_scheduler_tools_execute(const char *name, const cJSON *args, cJSON **out);

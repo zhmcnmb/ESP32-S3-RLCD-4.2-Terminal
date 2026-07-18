@@ -13,7 +13,8 @@
 
 static const char *TAG = "quota_client";
 
-#define POLL_INTERVAL_MS   (60 * 1000)
+#define POLL_INTERVAL_MS        (60 * 1000)
+#define POLL_INTERVAL_BATTERY_MS (300 * 1000) /* 电池供电(未接USB)时降频到300s */
 #define MDNS_QUERY_TIMEOUT_MS 3000
 #define HTTP_TIMEOUT_MS    5000
 #define RESP_BUF_SIZE      512 /* /api/quota/compact 响应很小，静态缓冲足够 */
@@ -56,6 +57,28 @@ static esp_err_t resolve_host(char *out, size_t out_len)
     return ESP_OK;
 }
 
+
+/* 桥接不可达只降级本页；保留旧数值供页面标“旧”，不影响其他智能体能力。 */
+static void mark_unavailable(void)
+{
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_quota.available = false;
+    sys_state_apply_quota(false, s_quota.used_5h, s_quota.used_7d,
+                          s_quota.resets_5h, s_quota.resets_7d, s_quota.fetched_at);
+    xSemaphoreGive(s_lock);
+}
+
+/* bridge 的用量字段是0~1的小数；拒绝截断/非数值时间，避免异常响应污染快照。 */
+static bool quota_fraction_valid(const cJSON *item)
+{
+    return cJSON_IsNumber(item) && item->valuedouble >= 0 && item->valuedouble <= 1;
+}
+
+static bool quota_epoch_valid(const cJSON *item)
+{
+    return cJSON_IsNumber(item) && item->valuedouble > 0 && item->valuedouble <= 4102444800.0
+           && item->valuedouble == (double)(time_t)item->valuedouble;
+}
 /* 解析 /api/quota/compact 响应体，成功则更新 s_quota(加锁)，失败返回错误码不改动缓存 */
 static esp_err_t parse_and_store(const char *json_str)
 {
@@ -63,31 +86,27 @@ static esp_err_t parse_and_store(const char *json_str)
     if (!root) {
         return ESP_ERR_INVALID_RESPONSE;
     }
-
     cJSON *available = cJSON_GetObjectItem(root, "available");
     cJSON *fetched_at = cJSON_GetObjectItem(root, "fetched_at");
     cJSON *h5 = cJSON_GetObjectItem(root, "5h");
     cJSON *d7 = cJSON_GetObjectItem(root, "7d");
-
     bool ok = cJSON_IsBool(available) && cJSON_IsTrue(available)
-            && cJSON_IsObject(h5) && cJSON_IsObject(d7);
+            && cJSON_IsObject(h5) && cJSON_IsObject(d7)
+            && quota_fraction_valid(cJSON_GetObjectItem(h5, "used"))
+            && quota_epoch_valid(cJSON_GetObjectItem(h5, "resets_at"))
+            && quota_fraction_valid(cJSON_GetObjectItem(d7, "used"))
+            && quota_epoch_valid(cJSON_GetObjectItem(d7, "resets_at"))
+            && quota_epoch_valid(fetched_at);
     if (!ok) {
-        /* 桥接服务明确返回 available:false(如未登录omp)，不是解析错误，按"暂不可用"处理。
-         * sys_state保留上一次成功的数值(不清零)，页面据此区分"从未有数据"和"有旧数据可展示" */
-        xSemaphoreTake(s_lock, portMAX_DELAY);
-        s_quota.available = false;
-        sys_state_apply_quota(false, s_quota.used_5h, s_quota.used_7d,
-                              s_quota.resets_5h, s_quota.resets_7d, s_quota.fetched_at);
-        xSemaphoreGive(s_lock);
+        /* available:false与畸形响应都只降级额度页，旧缓存仍可供页面标“旧”。 */
+        mark_unavailable();
         cJSON_Delete(root);
         return ESP_OK;
     }
-
     cJSON *h5_used = cJSON_GetObjectItem(h5, "used");
     cJSON *h5_resets = cJSON_GetObjectItem(h5, "resets_at");
     cJSON *d7_used = cJSON_GetObjectItem(d7, "used");
     cJSON *d7_resets = cJSON_GetObjectItem(d7, "resets_at");
-
     xSemaphoreTake(s_lock, portMAX_DELAY);
     s_quota.available = true;
     s_quota.used_5h = (float)cJSON_GetNumberValue(h5_used);
@@ -98,7 +117,6 @@ static esp_err_t parse_and_store(const char *json_str)
     sys_state_apply_quota(true, s_quota.used_5h, s_quota.used_7d,
                           s_quota.resets_5h, s_quota.resets_7d, s_quota.fetched_at);
     xSemaphoreGive(s_lock);
-
     cJSON_Delete(root);
     return ESP_OK;
 }
@@ -108,6 +126,7 @@ static void poll_once(void)
     char ip[16];
     esp_err_t err = resolve_host(ip, sizeof(ip));
     if (err != ESP_OK) {
+        mark_unavailable();
         ESP_LOGW(TAG, "mDNS解析%s.local失败: %s", s_host, esp_err_to_name(err));
         return;
     }
@@ -121,6 +140,11 @@ static void poll_once(void)
         .event_handler = http_event_handler,
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        ESP_LOGW(TAG, "HTTP客户端创建失败");
+        mark_unavailable();
+        return;
+    }
     s_resp_len = 0;
     s_resp_buf[0] = '\0';
 
@@ -130,12 +154,22 @@ static void poll_once(void)
 
     if (err != ESP_OK || status != 200) {
         ESP_LOGW(TAG, "轮询失败: err=%s status=%d", esp_err_to_name(err), status);
+        mark_unavailable();
         return;
     }
 
     if (parse_and_store(s_resp_buf) != ESP_OK) {
         ESP_LOGW(TAG, "响应解析失败: %s", s_resp_buf);
+        mark_unavailable();
     }
+}
+
+/* 电池供电(未接USB)时降低轮询频率省电；恢复USB供电自动回到正常档 */
+static uint32_t poll_delay_ms(void)
+{
+    sys_state_snapshot_t snap;
+    sys_state_get_snapshot(&snap);
+    return (snap.battery_ok && !snap.battery_charging) ? POLL_INTERVAL_BATTERY_MS : POLL_INTERVAL_MS;
 }
 
 static void quota_task(void *arg)
@@ -143,12 +177,13 @@ static void quota_task(void *arg)
     (void)arg;
     for (;;) {
         poll_once();
-        vTaskDelay(pdMS_TO_TICKS(POLL_INTERVAL_MS));
+        vTaskDelay(pdMS_TO_TICKS(poll_delay_ms()));
     }
 }
 
 esp_err_t claude_quota_client_init(const char *mdns_host, uint16_t port)
 {
+    if (s_lock) return ESP_OK;
     if (!mdns_host || !mdns_host[0]) {
         return ESP_ERR_INVALID_ARG;
     }
@@ -164,12 +199,16 @@ esp_err_t claude_quota_client_init(const char *mdns_host, uint16_t port)
     esp_err_t err = mdns_init();
     if (err != ESP_OK && err != ESP_ERR_INVALID_STATE /* 已初始化过 */) {
         ESP_LOGW(TAG, "mdns_init失败: %s", esp_err_to_name(err));
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
         return err;
     }
 
     BaseType_t ok = xTaskCreate(quota_task, "claude_quota_task", 4096, NULL, 3, NULL);
     if (ok != pdPASS) {
         ESP_LOGE(TAG, "任务创建失败");
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
         return ESP_ERR_NO_MEM;
     }
 

@@ -11,6 +11,7 @@
 #include "display_st7305.h"
 #include "env_logger.h"
 #include "esp_check.h"
+#include "esp_timer.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_system.h"
@@ -20,6 +21,7 @@
 #include "net_manager.h"
 #include "rtc_pcf85063.h"
 #include "sensor_shtc3.h"
+#include "scheduler.h"
 #include "storage_sd.h"
 #include "sys_state.h"
 #include "time_service.h"
@@ -37,6 +39,19 @@ static void log_if_failed(esp_err_t err, const char *what)
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "%s失败: %s", what, esp_err_to_name(err));
     }
+}
+
+/* B1: 每300s打印一次资源水位(启动日志同款四指标)，供长时间运行的内存趋势观察；
+ * 事件回调只做ESP_LOGI，无阻塞，符合FreeRTOS事件回调约束(见规范第7节) */
+#define RESOURCE_LOG_PERIOD_US (300LL * 1000000LL)
+
+static void resource_log_cb(void *arg)
+{
+    (void)arg;
+    ESP_LOGI(TAG, "资源水位 | 堆剩余 %" PRIu32 "B(历史最低%" PRIu32 "B) | PSRAM剩余%" PRIu32 "B(历史最低%" PRIu32 "B)",
+             (uint32_t)esp_get_free_heap_size(), (uint32_t)esp_get_minimum_free_heap_size(),
+             (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
+             (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
 }
 
 /* WiFi首次连接成功时触发(不论是否在15s等待窗口内)，保证延迟联网也能自动校时 */
@@ -99,6 +114,7 @@ esp_err_t app_runtime_start(const app_runtime_config_t *cfg)
     /* 以下均为可选外设/后台服务，失败降级不阻断启动 */
     log_if_failed(storage_sd_init(), "SD卡挂载");
     log_if_failed(time_service_init(cfg->timezone), "时间服务初始化");
+    log_if_failed(scheduler_init(), "提醒调度器启动");
     log_if_failed(env_logger_init(), "环境记录任务启动");
     log_if_failed(audio_pipeline_init(), "音频链路初始化(P5.1)");
 
@@ -119,5 +135,24 @@ esp_err_t app_runtime_start(const app_runtime_config_t *cfg)
              (uint32_t)esp_get_free_heap_size(), (uint32_t)esp_get_minimum_free_heap_size(),
              (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),
              (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
+
+    esp_timer_handle_t resource_log_timer = NULL;
+    const esp_timer_create_args_t resource_log_args = {
+        .callback = resource_log_cb,
+        .name = "res_log",
+    };
+    esp_err_t timer_err = esp_timer_create(&resource_log_args, &resource_log_timer);
+    if (timer_err == ESP_OK) {
+        timer_err = esp_timer_start_periodic(resource_log_timer, RESOURCE_LOG_PERIOD_US);
+    }
+    if (timer_err != ESP_OK) {
+        if (resource_log_timer) {
+            esp_err_t delete_err = esp_timer_delete(resource_log_timer);
+            if (delete_err != ESP_OK) {
+                ESP_LOGW(TAG, "资源水位定时器清理失败: %s", esp_err_to_name(delete_err));
+            }
+        }
+        ESP_LOGW(TAG, "资源水位定时器启动失败: %s", esp_err_to_name(timer_err));
+    }
     return ESP_OK;
 }

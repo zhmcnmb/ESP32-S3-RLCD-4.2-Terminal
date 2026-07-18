@@ -9,8 +9,7 @@
 #include "ui_v2.h"
 
 /*
- * 环境趋势页：上方给出当前温湿度，底部两条折线共享同一小时的时间方向。
- * 折线是数据本身，保留；页面框线、重复时间说明和空格对齐全部删除。
+ * 环境趋势页：当前读数并入各自趋势带表头，折线保留一小时时间方向。
  * 页面只读取 sys_state 快照(env_history)，不直接依赖 env_logger(规范第6节)。
  */
 
@@ -29,20 +28,47 @@ static void draw_time_label(int x, int y, time_t timestamp)
     st7305_draw_text(x, y, 1, text, true);
 }
 
-/* 趋势带只保留标签、量程与真实折线；时间端点说明同一条数据的覆盖范围。 */
-static void draw_trend_band(int y, const char *label,
-                            const sys_state_env_sample_t *samples, int n, bool is_temp)
+/* 反白标签提供趋势带的固定锚点，当前值紧随其后而不另占一块区域。 */
+static int draw_band_badge(int y, const char *label)
 {
     int label_w = st7305_utf8_width(1, label);
     st7305_fill_rect(20, y, label_w + 16, 18, true);
     st7305_draw_utf8(28, y + 1, 1, label, false);
+    return 20 + label_w + 16;
+}
 
+static void draw_band_header(int y, int badge_end,
+                             const sys_state_env_sample_t *sample, bool is_temp)
+{
+    char value[16];
+    if (is_temp) {
+        snprintf(value, sizeof(value), "%.1f", sample->temperature);
+    } else {
+        snprintf(value, sizeof(value), "%.0f", sample->humidity);
+    }
+
+    int value_x = badge_end + 14;
+    st7305_draw_text(value_x, y - 3, 3, value, true);
+    int value_end = value_x + 24 * (int)strlen(value);
+    if (is_temp) {
+        ui_v2_draw_temp_unit(value_end + 6, y);
+    } else {
+        st7305_draw_text(value_end + 6, y + 5, 2, "%", true);
+    }
+}
+
+/* 趋势带把量程置于折线右侧，给高一些的折线区保留完整观察空间。 */
+static void draw_trend_band(int y, const char *label,
+                            const sys_state_env_sample_t *samples, int n, bool is_temp)
+{
+    int badge_end = draw_band_badge(y, label);
     if (n < 2) {
         char msg[32];
         snprintf(msg, sizeof(msg), "正在积累 %d/2", n);
-        st7305_draw_utf8(88, y + 1, 1, msg, true);
+        st7305_draw_utf8(badge_end + 14, y + 1, 1, msg, true);
         return;
     }
+    draw_band_header(y, badge_end, &samples[n - 1], is_temp);
 
     float min_v = is_temp ? samples[0].temperature : samples[0].humidity;
     float max_v = min_v;
@@ -57,12 +83,12 @@ static void draw_trend_band(int y, const char *label,
     }
 
     char range[16];
-    snprintf(range, sizeof(range), "%.1f", min_v);
-    st7305_draw_text(88, y + 4, 1, range, true);
     snprintf(range, sizeof(range), "%.1f", max_v);
-    st7305_draw_text(380 - 8 * (int)strlen(range), y + 4, 1, range, true);
+    st7305_draw_text(380 - 8 * (int)strlen(range), y + 24, 1, range, true);
+    snprintf(range, sizeof(range), "%.1f", min_v);
+    st7305_draw_text(380 - 8 * (int)strlen(range), y + 72, 1, range, true);
 
-    const int plot_x = 20, plot_w = 360, plot_y = y + 28, plot_h = 30;
+    const int plot_x = 20, plot_w = 300, plot_y = y + 26, plot_h = 56;
     int prev_x = plot_x;
     int prev_y = plot_y;
     for (int i = 0; i < n; i++) {
@@ -77,8 +103,11 @@ static void draw_trend_band(int y, const char *label,
         prev_y = py;
     }
     st7305_fill_rect(prev_x - 2, prev_y - 2, 5, 5, true);
-    draw_time_label(plot_x, y + 64, samples[0].timestamp);
-    draw_time_label(380 - 40, y + 64, samples[n - 1].timestamp);
+    for (int px = plot_x; px < plot_x + plot_w; px += 4) {
+        st7305_set_pixel(px, plot_y + plot_h, true);
+    }
+    draw_time_label(plot_x, plot_y + plot_h + 6, samples[0].timestamp);
+    draw_time_label(plot_x + plot_w - 40, plot_y + plot_h + 6, samples[n - 1].timestamp);
 }
 
 static void draw(void)
@@ -90,22 +119,8 @@ static void draw(void)
     ui_v2_draw_header("环境趋势", &snap);
 
     int n = snap.env_history_count;
-    if (n > 0) {
-        const sys_state_env_sample_t *cur = &snap.env_history[n - 1];
-        char temp[16], humidity[16];
-        snprintf(temp, sizeof(temp), "%.1f", cur->temperature);
-        snprintf(humidity, sizeof(humidity), "%.0f", cur->humidity);
-
-        st7305_draw_utf8(20, 48, 1, "温度", true);
-        st7305_draw_text(20, 68, 4, temp, true);
-        st7305_draw_utf8(20 + st7305_utf8_width(4, temp) + 6, 84, 1, "C", true);
-        st7305_draw_utf8(220, 48, 1, "湿度", true);
-        st7305_draw_text(220, 68, 4, humidity, true);
-        st7305_draw_utf8(220 + st7305_utf8_width(4, humidity) + 6, 84, 1, "%", true);
-    }
-
-    draw_trend_band(126, "温度", snap.env_history, n, true);
-    draw_trend_band(210, "湿度", snap.env_history, n, false);
+    draw_trend_band(48, "温度", snap.env_history, n, true);
+    draw_trend_band(176, "湿度", snap.env_history, n, false);
 
     esp_err_t err = st7305_flush();
     if (err != ESP_OK) {

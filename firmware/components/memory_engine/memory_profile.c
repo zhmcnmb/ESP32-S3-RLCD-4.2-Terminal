@@ -147,15 +147,19 @@ static void merge_slot(memory_state_t *state, const profile_slot_t *slot)
 esp_err_t memory_profile_restore(memory_state_t *state)
 {
     if (!state) return ESP_ERR_INVALID_ARG;
-    profile_slot_t first = {0};
-    profile_slot_t second = {0};
-    read_slot(MEMORY_ENGINE_PROFILE_A_PATH, &first);
-    read_slot(MEMORY_ENGINE_PROFILE_B_PATH, &second);
-    const profile_slot_t *latest = first.valid && (!second.valid || first.generation >= second.generation)
-                                 ? &first : second.valid ? &second : NULL;
-    if (!latest) return ESP_OK;
-    merge_slot(state, latest);
-    state->profile_generation = latest->generation;
+    /* 双槽约3KB；恢复由main_task发起，放PSRAM避免挤占启动栈。 */
+    profile_slot_t *slots = heap_caps_calloc(2, sizeof(*slots), MALLOC_CAP_SPIRAM);
+    if (!slots) return ESP_ERR_NO_MEM;
+    read_slot(MEMORY_ENGINE_PROFILE_A_PATH, &slots[0]);
+    read_slot(MEMORY_ENGINE_PROFILE_B_PATH, &slots[1]);
+    const profile_slot_t *latest = slots[0].valid
+                                 && (!slots[1].valid || slots[0].generation >= slots[1].generation)
+                                 ? &slots[0] : slots[1].valid ? &slots[1] : NULL;
+    if (latest) {
+        merge_slot(state, latest);
+        state->profile_generation = latest->generation;
+    }
+    free(slots);
     return ESP_OK;
 }
 
@@ -168,9 +172,13 @@ static esp_err_t add_snapshot_record(cJSON *records, const memory_record_t *reco
         cJSON_Delete(json);
         return ESP_ERR_NO_MEM;
     }
-    if (record->expires_at) cJSON_AddNumberToObject(json, "expires_at", (double)record->expires_at);
-    else cJSON_AddNullToObject(json, "expires_at");
-    cJSON_AddItemToArray(records, json);
+    bool expiry_added = record->expires_at
+                        ? cJSON_AddNumberToObject(json, "expires_at", (double)record->expires_at)
+                        : cJSON_AddNullToObject(json, "expires_at");
+    if (!expiry_added || !cJSON_AddItemToArray(records, json)) {
+        cJSON_Delete(json);
+        return ESP_ERR_NO_MEM;
+    }
     return ESP_OK;
 }
 
@@ -209,7 +217,7 @@ esp_err_t memory_profile_write(memory_state_t *state)
         return ESP_ERR_INVALID_SIZE;
     }
     const char *path = generation & 1 ? MEMORY_ENGINE_PROFILE_A_PATH : MEMORY_ENGINE_PROFILE_B_PATH;
-    esp_err_t err = storage_sd_atomic_replace(path, text, size);
+    esp_err_t err = memory_writer_enqueue_replace(path, text, size);
     free(text);
     if (err == ESP_OK) state->profile_generation = generation;
     return err;

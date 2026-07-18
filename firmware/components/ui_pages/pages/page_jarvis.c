@@ -8,9 +8,9 @@
 #include "ui_v2.h"
 
 /*
- * Jarvis 默认页：专属机械面甲头像 + 极短状态。
+ * Jarvis 默认页：圆形双眼头像 + 极短状态。
  * 只读 sys_state 快照；全局语音取消由 ui_manager 提交。
- * 样式原则见 docs/voice-agent-design.md 第9节——不固定最终美术，只保证可辨识。
+ * 以最少几何区分相位，默认状态保持安静。
  */
 
 static const char *TAG = "page_jarvis";
@@ -80,58 +80,102 @@ static void save_view(const sys_state_snapshot_t *snap)
     s_view.voice_error[sizeof(s_view.voice_error) - 1] = '\0';
 }
 
-/* 面甲自身就是本页唯一结构轮廓：直接画八边形，不再用矩形外框叠斜线。
- * 相位只改变眼和核心，外形在状态切换时保持稳定，避免画面显得嘈杂。 */
+/* 圆环是头像唯一轮廓，两个眼睛承担大部分状态表达，避免机械面甲抢占状态信息。 */
+static void draw_orb_ring(int cx, int cy)
+{
+    const int radius = 72;
+    st7305_draw_round_rect(cx - radius, cy - radius, 2 * radius + 1, 2 * radius + 1,
+                            radius, true);
+}
+
+
+/* 头像只在半径不超过16px时绘制实心眼睛，逐行填充比引入位图更节省资源。 */
+static void draw_filled_disc(int cx, int cy, int radius)
+{
+    for (int y = -radius; y <= radius; y++) {
+        int x = 0;
+        while ((x + 1) * (x + 1) + y * y <= radius * radius) {
+            x++;
+        }
+        st7305_fill_rect(cx - x, cy + y, 2 * x + 1, 1, true);
+    }
+}
+
+static void draw_orb_eyes(int cx, int cy, sys_voice_phase_t phase, bool wifi_ok)
+{
+    int radius = phase == SYS_VOICE_LISTENING ? 13 : 10;
+    if (phase == SYS_VOICE_SPEAKING) {
+        radius = 12;
+    } else if (phase == SYS_VOICE_THINKING || phase == SYS_VOICE_TRANSCRIBING) {
+        radius = 7;
+    }
+
+    int eye_y = cy - 14;
+    int left_x = cx - 30;
+    int right_x = cx + 30;
+    if (phase == SYS_VOICE_ERROR || !wifi_ok) {
+        st7305_draw_line(left_x - radius, eye_y - radius, left_x + radius, eye_y + radius, true);
+        st7305_draw_line(left_x + radius, eye_y - radius, left_x - radius, eye_y + radius, true);
+        st7305_draw_line(right_x - radius, eye_y - radius, right_x + radius, eye_y + radius, true);
+        st7305_draw_line(right_x + radius, eye_y - radius, right_x - radius, eye_y + radius, true);
+        return;
+    }
+
+    draw_filled_disc(left_x, eye_y, radius);
+    draw_filled_disc(right_x, eye_y, radius);
+}
+
+/* 下半圆弧形成连续微笑；逐列绘制避免折线转角和独立像素落在嘴部。 */
+static void draw_orb_smile(int cx, int cy)
+{
+    const int radius = 29;
+    const int center_y = cy + 7;
+
+    for (int x = -24; x <= 24; x++) {
+        int y = 0;
+        while ((y + 1) * (y + 1) + x * x <= radius * radius) {
+            y++;
+        }
+        st7305_fill_rect(cx + x, center_y + y, 1, 2, true);
+    }
+}
+
+static void draw_orb_phase_mark(int cx, int cy, sys_voice_phase_t phase)
+{
+    int y = cy + 40;
+
+    /* 聆听/转写相位靠眼睛尺寸与底部文字区分,嘴部留白避免碎点。 */
+    switch (phase) {
+    case SYS_VOICE_THINKING:
+        st7305_fill_rect(cx - 14, y, 4, 4, true);
+        st7305_fill_rect(cx - 2, y, 4, 4, true);
+        st7305_fill_rect(cx + 10, y, 4, 4, true);
+        break;
+    case SYS_VOICE_EXECUTING:
+        st7305_draw_round_rect(cx - 14, y, 28, 6, 3, true);
+        break;
+    case SYS_VOICE_SPEAKING:
+        st7305_fill_rect(cx - 16, y + 1, 10, 3, true);
+        st7305_fill_rect(cx + 6, y + 1, 10, 3, true);
+        break;
+    case SYS_VOICE_CONFIRM:
+        st7305_draw_line(cx - 10, y + 2, cx - 2, y + 8, true);
+        st7305_draw_line(cx - 2, y + 8, cx + 12, y - 4, true);
+        break;
+    default:
+        break;
+    }
+}
+
 static void draw_avatar(int cx, int cy, sys_voice_phase_t phase, bool wifi_ok)
 {
-    const int w = 180, h = 170, cut = 22;
-    const int x = cx - w / 2;
-    const int y = cy - h / 2;
-    bool active = (phase != SYS_VOICE_IDLE) || !wifi_ok;
-
-    st7305_draw_line(x + cut, y, x + w - cut, y, true);
-    st7305_draw_line(x + w - cut, y, x + w, y + cut + 8, true);
-    st7305_draw_line(x + w, y + cut + 8, x + w, y + h - cut - 8, true);
-    st7305_draw_line(x + w, y + h - cut - 8, x + w - cut, y + h, true);
-    st7305_draw_line(x + w - cut, y + h, x + cut, y + h, true);
-    st7305_draw_line(x + cut, y + h, x, y + h - cut - 8, true);
-    st7305_draw_line(x, y + h - cut - 8, x, y + cut + 8, true);
-    st7305_draw_line(x, y + cut + 8, x + cut, y, true);
-
-    /* 两条短接缝给面甲结构感；天线只做身份点缀，不再围出第二层框。 */
-    st7305_draw_line(x + 32, y + 40, x + w - 32, y + 40, true);
-    st7305_draw_line(x + 32, y + h - 10, x + w - 32, y + h - 10, true);
-    st7305_fill_rect(x + 16, y - 8, 2, 8, true);
-    st7305_fill_rect(x + w - 18, y - 8, 2, 8, true);
-
-    int eye_y = y + 60;
-    int eye_w = phase == SYS_VOICE_LISTENING ? 30 : 24;
-    int eye_h = (phase == SYS_VOICE_THINKING || phase == SYS_VOICE_TRANSCRIBING) ? 4 : 11;
-    int left_x = cx - 44 - eye_w / 2;
-    int right_x = cx + 44 - eye_w / 2;
-    if (phase == SYS_VOICE_ERROR || !wifi_ok) {
-        st7305_draw_line(left_x, eye_y, left_x + eye_w, eye_y + eye_h, true);
-        st7305_draw_line(left_x + eye_w, eye_y, left_x, eye_y + eye_h, true);
-        st7305_draw_line(right_x, eye_y, right_x + eye_w, eye_y + eye_h, true);
-        st7305_draw_line(right_x + eye_w, eye_y, right_x, eye_y + eye_h, true);
-    } else if (active) {
-        st7305_fill_rect(left_x, eye_y, eye_w, eye_h, true);
-        st7305_fill_rect(right_x, eye_y, eye_w, eye_h, true);
+    draw_orb_ring(cx, cy);
+    draw_orb_eyes(cx, cy, phase, wifi_ok);
+    if (phase == SYS_VOICE_IDLE && wifi_ok) {
+        draw_orb_smile(cx, cy);
     } else {
-        st7305_draw_rect(left_x, eye_y, eye_w, eye_h, 1, true);
-        st7305_draw_rect(right_x, eye_y, eye_w, eye_h, 1, true);
+        draw_orb_phase_mark(cx, cy, phase);
     }
-
-    int core = (phase == SYS_VOICE_SPEAKING) ? 22 : 16;
-    int core_x = cx - core / 2;
-    int core_y = y + 104;
-    if (phase == SYS_VOICE_SPEAKING || phase == SYS_VOICE_LISTENING) {
-        st7305_fill_rect(core_x, core_y, core, core, true);
-    } else {
-        st7305_draw_rect(core_x, core_y, core, core, 2, true);
-    }
-    st7305_fill_rect(core_x - 14, core_y + core / 2 - 1, 8, 2, true);
-    st7305_fill_rect(core_x + core + 6, core_y + core / 2 - 1, 8, 2, true);
 }
 
 static void draw(const sys_state_snapshot_t *snap)

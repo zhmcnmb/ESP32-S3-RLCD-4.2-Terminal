@@ -25,3 +25,6 @@ bridge/.venv/
 
 # macOS
 .DS_Store
+
+# Oh My Pi 会话导出
+omp-session-*.html
