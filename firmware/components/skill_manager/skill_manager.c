@@ -122,6 +122,12 @@ static bool parse_crc32(const char *text, uint32_t *out)
     return true;
 }
 
+/* Skill 文件由常见工具生成，沿用 CRC-32/ISO-HDLC 的公开表示；ROM API 返回内部状态。 */
+static uint32_t skill_content_crc32(const char *content, size_t content_len)
+{
+    return ~esp_crc32_le(UINT32_MAX, (const uint8_t *)content, content_len);
+}
+
 static bool parse_header(char *text, skill_entry_t *entry, char **out_content)
 {
     bool has_name = false, has_description = false, has_version = false, has_tools = false, has_crc = false;
@@ -162,11 +168,11 @@ static bool parse_header(char *text, skill_entry_t *entry, char **out_content)
 
 static esp_err_t collect_directory(const char *name, void *ctx)
 {
-    skill_entry_t *directories = ctx;
+    char (*directories)[SKILL_NAME_MAX] = ctx;
     if (!valid_name(name)) return ESP_OK;
     for (int i = 0; i < SKILL_MAX_COUNT; i++) {
-        if (directories[i].directory[0] == '\0') {
-            copy_text(directories[i].directory, sizeof(directories[i].directory), name);
+        if (directories[i][0] == '\0') {
+            copy_text(directories[i], sizeof(directories[i]), name);
             return ESP_OK;
         }
     }
@@ -226,13 +232,13 @@ esp_err_t skill_manager_init(const skill_manager_config_t *config)
     esp_err_t seed_err = skill_defaults_seed();
     if (seed_err != ESP_OK) return seed_err;
 
-    skill_entry_t directories[SKILL_MAX_COUNT] = {0};
+    char directories[SKILL_MAX_COUNT][SKILL_NAME_MAX] = {0};
     esp_err_t list_err = storage_sd_list_dir(SKILL_ROOT, collect_directory, directories);
     if (list_err != ESP_OK) return list_err;
     for (int i = 0; i < SKILL_MAX_COUNT; i++) {
-        if (!directories[i].directory[0]) continue;
+        if (!directories[i][0]) continue;
         skill_entry_t entry = {0};
-        esp_err_t err = read_header(directories[i].directory, &entry);
+        esp_err_t err = read_header(directories[i], &entry);
         if (err != ESP_OK) continue;
         bool duplicate = false;
         for (int j = 0; j < s_state.count; j++) duplicate |= strcmp(s_state.entries[j].name, entry.name) == 0;
@@ -278,7 +284,7 @@ esp_err_t skill_manager_load(const char *name, char *out, size_t out_size)
     bool valid = parse_header(file, &current, &content) && same_metadata(indexed, &current);
     size_t content_len = valid && content ? strlen(content) : 0;
     valid = valid && content_len > 0 && content_len <= SKILL_CONTENT_MAX
-            && esp_crc32_le(0, (const uint8_t *)content, content_len) == indexed->content_crc32;
+            && skill_content_crc32(content, content_len) == indexed->content_crc32;
     if (!valid || content_len >= out_size) {
         free(file);
         return valid ? ESP_ERR_INVALID_SIZE : ESP_ERR_INVALID_CRC;

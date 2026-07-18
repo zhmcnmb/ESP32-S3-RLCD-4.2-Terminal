@@ -28,21 +28,34 @@ static esp_err_t ensure_utterance_buf(void)
     return ESP_OK;
 }
 
-static void append_utterance(const int16_t *data, size_t count)
+static bool append_utterance(const int16_t *data, size_t count)
 {
     if (!g_wakeword_ctx.utterance_buf || count == 0) {
-        return;
+        return false;
     }
     size_t space = g_wakeword_ctx.utterance_cap - g_wakeword_ctx.utterance_count;
     size_t copy = count < space ? count : space;
-    if (copy < count) {
-        ESP_LOGW(TAG, "语音段缓冲已满(截断 %u 样本)", (unsigned)(count - copy));
-    }
     memcpy(g_wakeword_ctx.utterance_buf + g_wakeword_ctx.utterance_count,
            data, copy * sizeof(*data));
     g_wakeword_ctx.utterance_count += copy;
+    return g_wakeword_ctx.utterance_count == g_wakeword_ctx.utterance_cap;
 }
 
+static void finish_utterance(bool capped)
+{
+    if (capped) {
+        ESP_LOGW(TAG, "语音达到%u秒上限，按上限提交",
+                 WAKEWORD_UTTERANCE_MAX_SECONDS);
+    } else {
+        ESP_LOGI(TAG, "语音结束 (共%u样本)",
+                 (unsigned)g_wakeword_ctx.utterance_count);
+    }
+    if (g_wakeword_ctx.cb) {
+        g_wakeword_ctx.cb(WAKEWORD_EVENT_SPEECH_END, g_wakeword_ctx.ctx);
+    }
+    g_wakeword_ctx.state = STATE_IDLE;
+    g_wakeword_ctx.vad_was_active = false;
+}
 static void process_multinet(const afe_fetch_result_t *res)
 {
     esp_mn_state_t state = g_wakeword_ctx.multinet->detect(g_wakeword_ctx.mn_data, res->data);
@@ -91,15 +104,14 @@ static void process_vad(const afe_fetch_result_t *res, const int16_t *feed, size
             g_wakeword_ctx.cb(WAKEWORD_EVENT_SPEECH_START, g_wakeword_ctx.ctx);
         }
     }
-    if (vad_active && g_wakeword_ctx.utterance_buf) {
-        append_utterance(feed, feed_count);
+    if (vad_active && g_wakeword_ctx.utterance_buf
+        && append_utterance(feed, feed_count)) {
+        finish_utterance(true);
+        return;
     }
     if (!vad_active && g_wakeword_ctx.vad_was_active) {
-        ESP_LOGI(TAG, "语音结束 (共%u样本)", (unsigned)g_wakeword_ctx.utterance_count);
-        if (g_wakeword_ctx.cb) {
-            g_wakeword_ctx.cb(WAKEWORD_EVENT_SPEECH_END, g_wakeword_ctx.ctx);
-        }
-        g_wakeword_ctx.state = STATE_IDLE;
+        finish_utterance(false);
+        return;
     }
     g_wakeword_ctx.vad_was_active = vad_active;
 }

@@ -53,6 +53,24 @@
 | PWR键 | 硬件级电源开关 | 非GPIO控制 |
 | 电池电压ADC | GPIO4 | ADC1，3倍分压，需`esp_adc_cal`校准 |
 
+## USB 下载 / 串口（真机实测，2026-07-17）
+
+Type-C 直接连接 ESP32-S3 原生 USB Serial/JTAG，用于烧录和日志；macOS 正常枚举时会显示
+`Espressif USB JTAG/serial debug unit`，并由 CDC-ACM 驱动创建
+`/dev/cu.usbmodem*`。后缀会变化，不能硬编码。
+
+诊断顺序：
+
+1. 先运行 `ioreg -p IOUSB -l -w 0`：没有 Espressif 子设备时，问题在 PWR 状态、数据线、
+   直连端口或板载 Type-C 物理链路，尚未进入驱动和 ESP-IDF 层。
+2. 有设备但无法确定串口名时，运行
+   `ioreg -p IOService -n 'USB JTAG/serial debug unit' -r -l`，从
+   `IOSerialBSDClient` 的 `IOCalloutDevice` 读取实际 `/dev/cu.usbmodem*` 路径。
+3. 用 `stat /dev/cu.usbmodem*` 或 `idf.py -p <实际路径> flash` 验证；自动化环境中的
+   glob 结果不能作为 `/dev` 特殊设备节点不存在的依据。
+
+进入下载模式：按住 BOOT，再短按 PWR 开机，随后松开 BOOT。
+
 ## 存储（已确认，来源：官方`06_SD_Card`示例 sdcard_bsp.h，commit b2ca44c）
 
 | 信号 | GPIO |

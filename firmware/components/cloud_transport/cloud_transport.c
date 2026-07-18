@@ -8,6 +8,7 @@
 
 #include "esp_crt_bundle.h"
 #include "esp_http_client.h"
+#include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "miniz.h"
@@ -117,8 +118,8 @@ static esp_err_t decompress_gzip(const fetch_ctx_t *ctx, char *out_buf, size_t o
         return ESP_ERR_INVALID_RESPONSE;
     }
     /* tinfl_decompressor约11KB，便捷接口会把它放到调用者栈上，曾打爆
-     * weather_task的4KB栈；改用底层接口并把解码器放在堆上。 */
-    tinfl_decompressor *decomp = calloc(1, sizeof(tinfl_decompressor));
+     * weather_task的4KB栈；改用底层接口并放PSRAM，避免耗掉内部堆。 */
+    tinfl_decompressor *decomp = heap_caps_calloc(1, sizeof(*decomp), MALLOC_CAP_SPIRAM);
     if (!decomp) return ESP_ERR_NO_MEM;
     tinfl_init(decomp);
     size_t in_len = (size_t)deflate_len;
@@ -126,7 +127,7 @@ static esp_err_t decompress_gzip(const fetch_ctx_t *ctx, char *out_buf, size_t o
     tinfl_status status = tinfl_decompress(decomp, (const mz_uint8 *)(ctx->buf + deflate_start), &in_len,
                                            (mz_uint8 *)out_buf, (mz_uint8 *)out_buf, &decompressed,
                                            TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF);
-    free(decomp);
+    heap_caps_free(decomp);
     if (status != TINFL_STATUS_DONE) {
         ESP_LOGW(TAG, "gzip解压失败(status=%d，可能是output缓冲区不够大)", (int)status);
         return ESP_ERR_INVALID_RESPONSE;

@@ -93,8 +93,8 @@ esp_err_t storage_sd_init(void)
         s_card = NULL;
         /* 区分失败原因，否则只看到笼统的ESP_FAIL无从下手 */
         if (err == ESP_FAIL) {
-            ESP_LOGW(TAG, "卡能通信但文件系统挂载失败——大概率是exFAT格式，"
-                          "ESP-IDF默认只支持FAT16/FAT32，请把卡格式化为FAT32");
+            ESP_LOGW(TAG, "卡能通信但文件系统无法挂载——可能是NTFS/exFAT或分区损坏，"
+                          "ESP-IDF只支持FAT16/FAT32，请把卡格式化为FAT32");
         } else if (err == ESP_ERR_TIMEOUT || err == ESP_ERR_NOT_FOUND) {
             ESP_LOGW(TAG, "未检测到SD卡(%s)，请确认卡已插好", esp_err_to_name(err));
         } else {

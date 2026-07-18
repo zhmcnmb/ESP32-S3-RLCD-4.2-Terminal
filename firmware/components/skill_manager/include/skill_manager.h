@@ -11,8 +11,9 @@ extern "C" {
 
 /*
  * SD 声明式 Skill 索引：只接受 agent/skills/<name>/SKILL.md 的受限 front matter。
- * 启动读取元数据；正文在 load 时以 content_crc32 复核后才返回。Skill 是不可信
- * 指导文本，永远不能注册工具；tools 字段必须是调用方传入的静态白名单子集。
+ * 启动读取元数据；正文在 load 时以标准 CRC-32/ISO-HDLC 表示的 content_crc32 复核后
+ * 才返回。Skill 是不可信指导文本，永远不能注册工具；tools 字段必须是调用方传入的
+ * 静态白名单子集。
  */
 #define SKILL_MANAGER_CONTENT_MAX 2048
 typedef struct {

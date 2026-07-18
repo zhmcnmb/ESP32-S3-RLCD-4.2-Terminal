@@ -1,8 +1,6 @@
 #include "voice_assistant.h"
 #include "voice_assistant_internal.h"
-
 #include <inttypes.h>
-
 #include "agent_runtime.h"
 #include "asr_client.h"
 #include "audio_pipeline.h"
@@ -15,14 +13,11 @@
 #include "freertos/task.h"
 #include "sys_state.h"
 #include "wakeword.h"
-
 static const char *TAG = "voice_assistant";
-
-#define MAX_UTTERANCE_SAMPLES (12 * 16000)
+#define MAX_UTTERANCE_SAMPLES (15 * 16000)
 /* ASR 文本进入 LLM 前只短暂驻留任务栈，512B 覆盖客户端单轮转写契约。 */
 #define ASR_TEXT_MAX 512
 #define LISTENING_TIMEOUT_MS 10000
-
 static QueueHandle_t s_evt_queue;
 static uint32_t s_turn_id;
 static volatile bool s_cancel;
@@ -32,9 +27,7 @@ static int16_t *s_utt_buf;
 static esp_timer_handle_t s_cancel_timer;
 static sys_voice_phase_t s_current_phase = SYS_VOICE_IDLE;
 static int64_t s_listening_deadline_us;
-
-/* ---------- 状态机：只允许语义合理的相位转换，非法转换拒绝+记日志 ----------
- * P6.0 会启用 EXECUTING/CONFIRM，转换表提前留好分支，页面外部行为不变 */
+/* 状态机：只允许语义合理转换；P6.0预留EXECUTING/CONFIRM，非法转换拒绝并记录。 */
 static bool phase_transition_valid(sys_voice_phase_t from, sys_voice_phase_t to)
 {
     if (from == to) {
@@ -42,7 +35,8 @@ static bool phase_transition_valid(sys_voice_phase_t from, sys_voice_phase_t to)
     }
     switch (from) {
     case SYS_VOICE_IDLE:
-        return to == SYS_VOICE_LISTENING;
+        /* scheduler 可在没有用户轮次时直接播报提醒。 */
+        return to == SYS_VOICE_LISTENING || to == SYS_VOICE_SPEAKING;
     case SYS_VOICE_LISTENING:
         return to == SYS_VOICE_TRANSCRIBING || to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
     case SYS_VOICE_TRANSCRIBING:
@@ -63,7 +57,6 @@ static bool phase_transition_valid(sys_voice_phase_t from, sys_voice_phase_t to)
         return false;
     }
 }
-
 /* 复合状态更新：校验转换合法性 + 推进相位 + (仅ERROR)带短原因文案，
  * page_jarvis 据此区分"网络故障"/"未听清"等，而不是所有异常显示同一个词 */
 static void voice_alert(sys_voice_phase_t phase, const char *reason)
@@ -108,6 +101,17 @@ static void on_agent_tool_state(bool active, void *ctx)
     voice_alert(active ? SYS_VOICE_EXECUTING : SYS_VOICE_THINKING, NULL);
 }
 
+static esp_err_t s_reply_stream_err;
+
+static void on_agent_reply_delta(const char *delta, void *ctx)
+{
+    (void)ctx;
+    voice_alert(SYS_VOICE_SPEAKING, NULL);
+    if (s_reply_stream_err == ESP_OK) {
+        s_reply_stream_err = va_reply_stream_push_delta(delta);
+    }
+}
+
 static void wakeword_cb(wakeword_event_t event, void *ctx)
 {
     (void)ctx;
@@ -127,27 +131,57 @@ static esp_err_t run_asr(char *out_text, size_t out_len)
     return err;
 }
 
-static esp_err_t run_chat(const char *user_text, const char **reply)
+static esp_err_t run_chat(const char *user_text, const char **reply, bool *out_streamed)
 {
+    s_reply_stream_err = va_reply_stream_start(&s_cancel);
+    if (s_reply_stream_err != ESP_OK) return s_reply_stream_err;
     voice_alert(SYS_VOICE_THINKING, NULL);
-    esp_err_t err = agent_runtime_run_turn(user_text, &s_cancel,
-                                           on_agent_tool_state, NULL, reply);
-    if (err != ESP_OK) {
+    agent_runtime_turn_options_t options = {
+        .cancel_flag = &s_cancel,
+        .tool_state_cb = on_agent_tool_state,
+        .tool_state_ctx = NULL,
+        .reply_delta_cb = on_agent_reply_delta,
+        .reply_delta_ctx = NULL,
+    };
+    esp_err_t err = agent_runtime_run_turn(user_text, &options, reply);
+    esp_err_t stream_err = va_reply_stream_finish();
+    /* 45s总预算超时但已流出并播出部分内容：不再报"回答失败"覆盖已播报的语音——
+     * *reply此时可能为NULL(run_loop超时时未走到finish_reply)，末尾日志判空处理。 */
+    bool truncated = err == ESP_ERR_TIMEOUT && s_reply_stream_err == ESP_OK
+                     && stream_err == ESP_OK && va_reply_stream_has_content();
+    if (truncated) {
+        ESP_LOGW(TAG, "turn %" PRIu32 " 回答被截断: 已播出部分内容", s_turn_id);
+    } else if (err != ESP_OK) {
         ESP_LOGW(TAG, "智能体失败: %s", esp_err_to_name(err));
         return err;
+    } else if (s_reply_stream_err != ESP_OK || stream_err != ESP_OK) {
+        return s_reply_stream_err != ESP_OK ? s_reply_stream_err : stream_err;
     }
-    ESP_LOGI(TAG, "turn %" PRIu32 " LLM: %s", s_turn_id, *reply);
+    *out_streamed = truncated ? true : va_reply_stream_has_content();
+    ESP_LOGI(TAG, "turn %" PRIu32 " LLM: %s", s_turn_id, *reply ? *reply : "(截断)");
     return ESP_OK;
 }
 
-static esp_err_t run_tts(const char *text)
+static void finish_turn(sys_voice_phase_t phase, const char *reason);
+
+/* 提醒仅在语音任务空闲时接手；音频独占和播报细节留在 voice_reminder.c。 */
+static void reminder_started(void)
 {
+    s_in_turn = true;
+    s_busy = true;
+    s_turn_id++;
     voice_alert(SYS_VOICE_SPEAKING, NULL);
-    int status = 0;
-    return va_tts_play(text, &s_cancel, &status);
 }
 
-static void finish_turn(sys_voice_phase_t phase, const char *reason);
+static void reminder_finished(void)
+{
+    finish_turn(SYS_VOICE_IDLE, NULL);
+}
+
+static void play_pending_reminder(void)
+{
+    va_reminder_play(reminder_started, reminder_finished, &s_cancel);
+}
 
 /* 检查阶段结果：取消→IDLE，错误→ERROR(带原因)。返回 true 表示 turn 已结束 */
 static bool stage_failed(esp_err_t err, const char *fail_reason)
@@ -163,12 +197,10 @@ static bool stage_failed(esp_err_t err, const char *fail_reason)
     }
     return false;
 }
-
 static bool listening_timed_out(void)
 {
     return s_listening_deadline_us != 0 && esp_timer_get_time() >= s_listening_deadline_us;
 }
-
 static void finish_listening(void)
 {
     esp_err_t err = wakeword_stop();
@@ -181,6 +213,8 @@ static void finish_listening(void)
 
 static void finish_turn(sys_voice_phase_t phase, const char *reason)
 {
+    ESP_LOGI(TAG, "turn %" PRIu32 " 栈余 %uB", s_turn_id,
+             (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     voice_alert(phase, reason);
     s_listening_deadline_us = 0;
     clear_cancel_flags();
@@ -218,14 +252,12 @@ static void handle_speech_end(void)
         finish_turn(SYS_VOICE_IDLE, NULL);
         return;
     }
-
     size_t n = wakeword_get_utterance(s_utt_buf, MAX_UTTERANCE_SAMPLES);
     if (n == 0) {
         ESP_LOGW(TAG, "turn %" PRIu32 " 录音为空", s_turn_id);
         finish_turn(SYS_VOICE_IDLE, NULL);
         return;
     }
-
     size_t trimmed = va_wav_trim_trailing_silence(s_utt_buf, n);
     if (trimmed < n) {
         ESP_LOGI(TAG, "turn %" PRIu32 " 裁剪尾部静音 %u->%u样本",
@@ -233,14 +265,12 @@ static void handle_speech_end(void)
         n = trimmed;
     }
     int32_t peak = va_wav_normalize_utterance(s_utt_buf, n);
-
     err = va_wav_save_utterance(s_utt_buf, n);
     if (err != ESP_OK) {
         finish_turn(SYS_VOICE_ERROR, "录音失败");
         return;
     }
     ESP_LOGI(TAG, "turn %" PRIu32 " WAV %u样本 峰值%d", s_turn_id, (unsigned)n, (int)peak);
-
     char asr_text[ASR_TEXT_MAX];
     err = run_asr(asr_text, sizeof(asr_text));
     if (stage_failed(err, "识别失败")) return;
@@ -249,13 +279,15 @@ static void handle_speech_end(void)
         return;
     }
     ESP_LOGI(TAG, "turn %" PRIu32 " ASR: %s", s_turn_id, asr_text);
-
     const char *reply = NULL;
-    err = run_chat(asr_text, &reply);
+    bool streamed = false;
+    err = run_chat(asr_text, &reply, &streamed);
     if (stage_failed(err, "回答失败")) return;
-
-    err = run_tts(reply);
-    if (stage_failed(err, "播放失败")) return;
+    if (!streamed) {
+        voice_alert(SYS_VOICE_SPEAKING, NULL);
+        err = va_tts_play_clean(reply, &s_cancel, NULL);
+        if (stage_failed(err, "播放失败")) return;
+    }
     finish_turn(SYS_VOICE_IDLE, NULL);
 }
 
@@ -292,14 +324,12 @@ static void dispatch_wake_event(wakeword_event_t evt)
 static void voice_task(void *arg)
 {
     (void)arg;
-
     s_utt_buf = heap_caps_malloc(MAX_UTTERANCE_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
     if (!s_utt_buf) {
         ESP_LOGE(TAG, "录音缓冲分配失败");
         vTaskDelete(NULL);
         return;
     }
-
     esp_err_t err = wakeword_init(wakeword_cb, NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "wakeword_init失败: %s", esp_err_to_name(err));
@@ -312,11 +342,9 @@ static void voice_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-
     voice_alert(SYS_VOICE_IDLE, NULL);
     ESP_LOGI(TAG, "就绪，等待唤醒词 | 栈余 %" PRIu32 "B",
              (uint32_t)uxTaskGetStackHighWaterMark(NULL));
-
     wakeword_event_t evt;
     for (;;) {
         BaseType_t received = xQueueReceive(s_evt_queue, &evt, pdMS_TO_TICKS(100));
@@ -332,6 +360,8 @@ static void voice_task(void *arg)
         }
         if (received == pdTRUE && !s_busy) {
             dispatch_wake_event(evt);
+        } else if (!s_busy && !s_in_turn) {
+            play_pending_reminder();
         }
     }
 }

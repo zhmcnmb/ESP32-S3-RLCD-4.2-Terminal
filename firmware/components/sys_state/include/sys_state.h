@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <time.h>
 
@@ -32,6 +33,9 @@ extern "C" {
  */
 
 #define SYS_STATE_ENV_HISTORY_LEN 60 /* 与 env_logger 环形缓冲容量保持一致 */
+
+/* scheduler→voice_assistant 的单槽提醒邮箱容量；固定上限避免任务间动态分配。 */
+#define SYS_STATE_REMINDER_TEXT_MAX 96
 
 /* 语音/agent 对外可见相位。UI 只读快照；状态机由 voice_assistant 推进 */
 typedef enum {
@@ -130,6 +134,15 @@ void sys_state_apply_voice(sys_voice_phase_t phase, uint32_t turn_id, const char
 /* 页面提交取消请求；voice_assistant 轮询 consume 后清位 */
 void sys_state_request_voice_cancel(void);
 bool sys_state_consume_voice_cancel(void);
+
+/* scheduler 投递到期提醒；上一条尚未播出时返回false，调用方下秒重试。 */
+bool sys_state_post_reminder(const char *text);
+
+/* 检查是否有待播报提醒，不取走邮箱内容。 */
+bool sys_state_reminder_pending(void);
+
+/* voice_assistant 空闲时取走一条提醒；无提醒或out不足容纳全文时返回false且不清槽。 */
+bool sys_state_consume_reminder(char *out, size_t out_len);
 
 #ifdef __cplusplus
 }

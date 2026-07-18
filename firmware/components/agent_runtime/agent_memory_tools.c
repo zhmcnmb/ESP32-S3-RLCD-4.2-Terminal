@@ -95,7 +95,11 @@ static esp_err_t context_to_json(const memory_context_t *context, cJSON **out)
             cJSON_Delete(json);
             return ESP_ERR_NO_MEM;
         }
-        cJSON_AddItemToArray(memories, item);
+        if (!cJSON_AddItemToArray(memories, item)) {
+            cJSON_Delete(item);
+            cJSON_Delete(json);
+            return ESP_ERR_NO_MEM;
+        }
     }
     *out = json;
     return ESP_OK;
@@ -145,11 +149,19 @@ static esp_err_t tool_remember(const cJSON *args, cJSON **out)
         || (ttl_item && !parse_uint(args, "ttl_seconds", 1, MEMORY_ENGINE_TTL_MAX_SECONDS, &ttl))) {
         return ESP_ERR_INVALID_ARG;
     }
+    cJSON *result = cJSON_CreateObject();
+    if (!result || !cJSON_AddBoolToObject(result, "stored", true)) {
+        cJSON_Delete(result);
+        return ESP_ERR_NO_MEM;
+    }
     memory_event_t event = {.type = parsed_type, .content = content->valuestring, .ttl_seconds = ttl};
     esp_err_t err = memory_record(&event);
-    if (err != ESP_OK) return err;
-    *out = cJSON_CreateObject();
-    return *out && cJSON_AddBoolToObject(*out, "stored", true) ? ESP_OK : ESP_ERR_NO_MEM;
+    if (err != ESP_OK) {
+        cJSON_Delete(result);
+        return err;
+    }
+    *out = result;
+    return ESP_OK;
 }
 
 static esp_err_t tool_forget(const cJSON *args, cJSON **out)
@@ -157,10 +169,18 @@ static esp_err_t tool_forget(const cJSON *args, cJSON **out)
     uint32_t id = 0;
     if (!s_allow_forget || !out || !has_fields(args, "id", "id", NULL)
         || !parse_uint(args, "id", 1, UINT32_MAX, &id)) return ESP_ERR_INVALID_ARG;
+    cJSON *result = cJSON_CreateObject();
+    if (!result || !cJSON_AddBoolToObject(result, "forgotten", true)) {
+        cJSON_Delete(result);
+        return ESP_ERR_NO_MEM;
+    }
     esp_err_t err = memory_forget((memory_id_t)id);
-    if (err != ESP_OK) return err;
-    *out = cJSON_CreateObject();
-    return *out && cJSON_AddBoolToObject(*out, "forgotten", true) ? ESP_OK : ESP_ERR_NO_MEM;
+    if (err != ESP_OK) {
+        cJSON_Delete(result);
+        return err;
+    }
+    *out = result;
+    return ESP_OK;
 }
 
 const llm_tool_def_t *agent_memory_tools_get_definitions(int *out_count)

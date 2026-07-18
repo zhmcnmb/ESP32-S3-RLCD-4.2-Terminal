@@ -18,7 +18,8 @@ extern "C" {
  *   真出现再加，不预先实现未验证过的用法)。multipart帧(boundary/Content-Disposition)
  *   由调用方(asr_client)自己拼body，cloud_transport不理解协议细节，只管传输字节。
  *
- * 不持有状态、不需要init，纯函数式调用，调用方各自管理自己的轮询任务和缓存。
+ * 一次性 GET/POST 不持有状态、不需要init；需要跨连续POST复用TLS时，调用方显式持有
+ * 下方 cloud_stream_conn_t，不影响其他云客户端的纯函数式调用方式。
  */
 
 /*
@@ -80,14 +81,15 @@ typedef esp_err_t (*cloud_transport_chunk_cb_t)(const char *data, size_t len, vo
  * 认证方式固定如此，和weather_client那种自定义header名不同，不做成通用header_name参数)。
  * content_type是请求体MIME(如"application/json")，可选。
  *
- * cancel_flag可选：非NULL时读循环每隔(至多)HTTP读超时间隔检查一次，一旦被置true就
- * 立即关闭连接、返回 ESP_ERR_NOT_FINISHED(语义借用为"被主动中止"，仓库内一处调用)。
+ * cancel_flag可选：非NULL时每个请求体分片和每轮响应读取前都会检查；单次底层I/O不可
+ * 抢占，因此取消延迟至多为一次HTTP I/O超时。命中后返回ESP_ERR_NOT_FINISHED。
  *
- * *out_status在HTTP握手成功后总会写入实际状态码(包括401/429/503/504这类非2xx，供
- * 调用方分类重试)；网络层失败(连接/TLS/超时/取消)时*out_status保持0，调用方不应读取。
+ * 成功取得HTTP响应头后*out_status会写入实际状态码(包括401/429/503/504)。连接/TLS
+ * 失败时保持0；若取消或总超时发生在响应头之后，该值可能已写入，调用方须以返回错误码为准。
  *
  * 失败返回:
  *   ESP_ERR_INVALID_ARG       参数为空
+ *   ESP_ERR_INVALID_SIZE      请求体长度超过esp_http_client可表达范围
  *   ESP_ERR_NO_MEM             内部资源分配失败
  *   ESP_ERR_NOT_FINISHED       cancel_flag被置位，请求被主动中止
  *   ESP_ERR_HTTP_CONNECT       HTTP状态码不是2xx(*out_status带具体码)
@@ -98,6 +100,30 @@ esp_err_t cloud_transport_post_stream(const char *url, const char *auth_header_v
                                        const char *content_type, const void *body, size_t body_len,
                                        cloud_transport_chunk_cb_t on_chunk, void *user_ctx,
                                        const volatile bool *cancel_flag, int *out_status);
+
+/*
+ * 持久连接的流式POST：同 host 连续多次 POST(如TTS一次回答的多个合成块)复用同一条
+ * TLS连接，省去每块单独握手的耗时；服务端若中途主动断开连接，由调用方重试兜底
+ * (关闭旧连接、重新open、原地重试一次)，本Interface不自动重连。
+ *
+ * conn_open创建一条连接(不发送请求)；conn_post_stream在其上执行一次完整的流式POST，
+ * 成功或失败后连接保持打开供下次复用(不主动close)；conn_close才真正关闭底层连接并
+ * 释放资源，NULL容忍。conn_post_stream 不可重入——同一conn上一次调用未返回前再次
+ * 调用会返回 ESP_ERR_INVALID_STATE(调用方本身应串行使用同一条连接)。
+ *
+ * out_status/cancel_flag/错误码语义与 cloud_transport_post_stream() 一致。
+ */
+typedef struct cloud_stream_conn cloud_stream_conn_t; /* 不透明持久连接 */
+
+esp_err_t cloud_transport_conn_open(cloud_stream_conn_t **out_conn, const char *url);
+
+esp_err_t cloud_transport_conn_post_stream(cloud_stream_conn_t *conn,
+        const char *url, const char *auth_header_value, const char *content_type,
+        const void *body, size_t body_len,
+        cloud_transport_chunk_cb_t on_chunk, void *user_ctx,
+        const volatile bool *cancel_flag, int *out_status);
+
+void cloud_transport_conn_close(cloud_stream_conn_t *conn); /* NULL 容忍 */
 
 #ifdef __cplusplus
 }
