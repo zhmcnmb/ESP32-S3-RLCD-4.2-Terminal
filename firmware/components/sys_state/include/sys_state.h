@@ -15,7 +15,7 @@ extern "C" {
  * 全局状态快照：UI(及后续P6 agent工具)读取设备/业务状态的唯一权威入口。
  *
  * 两种数据来源：
- *  1. 已有独立后台任务的服务(env_logger历史/weather_client/claude_quota_client)
+ *  1. 已有独立后台任务的服务(env_logger历史/weather_client)
  *     在自己任务里完成一次采集后调用对应 sys_state_apply_*() 推送进来。
  *  2. 没有专属后台任务的"环境状态"(瞬时温湿度/电池/WiFi/SD挂载) 由本模块
  *     自己的内部轮询任务定期采集并写入，页面不需要关心谁在采集。
@@ -89,13 +89,6 @@ typedef struct {
     char weather_wind[40];
     time_t weather_updated_at;
 
-    /* Claude用量 */
-    bool quota_available;
-    float quota_used_5h;
-    float quota_used_7d;
-    time_t quota_resets_5h;
-    time_t quota_resets_7d;
-    time_t quota_updated_at;
 
     /* 语音助手(P5.2)：page_jarvis 只读这些字段 */
     sys_voice_phase_t voice_phase;
@@ -106,7 +99,7 @@ typedef struct {
 } sys_state_snapshot_t;
 
 /* 依赖 shtc3_init()/battery_init()/board_init() 已完成；内部轮询任务采集瞬时
- * 温湿度/电池/WiFi/SD状态，与env_logger/weather_client/claude_quota_client
+ * 温湿度/电池/WiFi/SD状态，与env_logger/weather_client
  * 各自的后台任务相互独立、互不阻塞 */
 esp_err_t sys_state_init(void);
 
@@ -114,9 +107,9 @@ esp_err_t sys_state_init(void);
 void sys_state_get_snapshot(sys_state_snapshot_t *out);
 
 /* 以下均由对应Producer在一次采集后调用。env/battery在ok=false时数值字段填0
- * (页面对ok=false一律显示占位符"--"，不读具体数值)；weather/quota在
+ * (页面对ok=false一律显示占位符"--"，不读具体数值)；weather在
  * available=false时由调用方决定传入0(从未成功过)还是上一次的缓存值(曾经
- * 成功过，额度桥接临时不可达)，让页面能区分"从无数据"和"有旧数据可展示" */
+ * 成功过，临时不可达)，让页面能区分"从无数据"和"有旧数据可展示" */
 void sys_state_apply_env(bool ok, float temperature, float humidity, time_t updated_at);
 void sys_state_apply_battery(bool ok, float voltage, int percent, bool charging);
 void sys_state_apply_wifi(bool connected);
@@ -124,8 +117,6 @@ void sys_state_apply_sd(bool mounted);
 void sys_state_apply_env_history(const sys_state_env_sample_t *samples, int count, uint32_t total);
 void sys_state_apply_weather(bool available, float temperature, int humidity,
                              const char *condition, const char *wind, time_t updated_at);
-void sys_state_apply_quota(bool available, float used_5h, float used_7d,
-                           time_t resets_5h, time_t resets_7d, time_t updated_at);
 
 /* voice_assistant 推进相位；turn_id 由调用方递增后传入。reason 仅在
  * phase==SYS_VOICE_ERROR 时展示，可传NULL(显示通用"故障")；其余相位忽略 */

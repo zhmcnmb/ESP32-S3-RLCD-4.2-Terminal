@@ -104,15 +104,6 @@ static size_t find_record(memory_id_t id)
     return SIZE_MAX;
 }
 
-static void remove_record(size_t index)
-{
-    if (index + 1 < s_state.count) {
-        memmove(&s_state.entries[index], &s_state.entries[index + 1],
-                (s_state.count - index - 1) * sizeof(s_state.entries[0]));
-    }
-    s_state.count--;
-}
-
 static bool duplicate_event(const memory_event_t *event, time_t now)
 {
     for (size_t i = 0; i < s_state.count; i++) {
@@ -245,7 +236,7 @@ esp_err_t memory_forget(memory_id_t id)
     bool profile = s_state.entries[index].record.type == MEMORY_TYPE_PROFILE;
     esp_err_t err = memory_store_append_tombstone(id);
     if (err == ESP_OK) {
-        remove_record(index);
+        memory_erase_entry(&s_state, index);
         if (profile) update_profile_snapshot();
     }
     unlock_state();
@@ -273,7 +264,7 @@ esp_err_t memory_maintain(uint32_t budget_ms)
         err = memory_store_append_tombstone(record->id);
         if (err != ESP_OK) break;
         profile_changed |= record->type == MEMORY_TYPE_PROFILE;
-        remove_record(i);
+        memory_erase_entry(&s_state, i);
     }
     if (err == ESP_OK && profile_changed) update_profile_snapshot();
     unlock_state();

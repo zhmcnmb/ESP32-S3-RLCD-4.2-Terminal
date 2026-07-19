@@ -203,7 +203,6 @@ esp_err_t asr_client_transcribe(const char *wav_rel_path, char *out_text,
                                 size_t out_text_size,
                                 const volatile bool *cancel_flag, int *out_status)
 {
-    /* 参数校验 */
     if (!s_initialized || !wav_rel_path || !out_text || out_text_size == 0 || !out_status) {
         if (out_status) *out_status = 0;
         return ESP_ERR_INVALID_ARG;

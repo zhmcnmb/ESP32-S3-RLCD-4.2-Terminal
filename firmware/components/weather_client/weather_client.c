@@ -1,5 +1,6 @@
 #include "weather_client.h"
 
+#include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
@@ -17,6 +18,14 @@ static const char *TAG = "weather_client";
 #define POLL_INTERVAL_MS (15 * 60 * 1000)      /* 天气变化慢，15分钟一次足够 */
 #define POLL_INTERVAL_BATTERY_MS (30 * 60 * 1000) /* 电池供电(未接USB)时降频到30分钟 */
 #define RESP_BUF_SIZE 1024 /* QWeather /now 响应解压后实测约450字节，留足余量 */
+typedef struct {
+    bool available;
+    float temperature;
+    int humidity;
+    char condition[24];
+    char wind[40];
+    time_t fetched_at;
+} weather_now_t;
 
 static char s_api_key[64];
 static char s_api_host[64];
@@ -41,7 +50,7 @@ static float json_str_num(cJSON *obj, const char *key)
 }
 
 /* 请求失败/解析失败时调用: 保留上次缓存值，只翻转available，让页面区分
- * "从未成功过"和"有旧数据可展示"(R0已确立的降级语义，claude_quota_client同款) */
+ * "从未成功过"和"有旧数据可展示"(R0已确立的降级语义) */
 static void mark_unavailable(void)
 {
     xSemaphoreTake(s_lock, portMAX_DELAY);
@@ -154,14 +163,3 @@ esp_err_t weather_client_init(const char *api_key, const char *api_host, const c
     return ESP_OK;
 }
 
-bool weather_client_get(weather_now_t *out)
-{
-    if (!out || !s_lock) {
-        return false;
-    }
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    *out = s_weather;
-    bool has_data = s_weather.fetched_at != 0;
-    xSemaphoreGive(s_lock);
-    return has_data;
-}

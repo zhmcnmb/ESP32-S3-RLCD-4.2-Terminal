@@ -79,9 +79,6 @@ static void dispatch_input(input_event_t evt)
     case INPUT_EVENT_BACK:
         dispatch_key(UI_KEY_BACK);
         break;
-    case INPUT_EVENT_VOICE:
-        /* 保留枚举兼容；P5.2 起 KEY 长按不再发布，也不显示占位提示 */
-        break;
     }
 }
 
@@ -138,7 +135,3 @@ esp_err_t ui_manager_start(void)
     return ESP_OK;
 }
 
-void ui_manager_goto(int index)
-{
-    enter_page(index);
-}

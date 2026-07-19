@@ -24,7 +24,6 @@ typedef struct {
 
 void agent_text_init(agent_text_t *text);
 void agent_text_reset(agent_text_t *text);
-void agent_text_free(agent_text_t *text);
 esp_err_t agent_text_append(agent_text_t *text, const char *data, size_t len);
 const char *agent_text_c_str(const agent_text_t *text);
 size_t agent_text_len(const agent_text_t *text);

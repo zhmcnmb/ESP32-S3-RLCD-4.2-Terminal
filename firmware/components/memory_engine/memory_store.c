@@ -15,10 +15,12 @@ static const char *TAG = "memory_store";
 
 typedef esp_err_t (*memory_line_cb_t)(const char *line, void *ctx);
 
-static uint32_t json_crc(const cJSON *json)
+uint32_t memory_json_crc(const cJSON *json)
 {
     char *text = cJSON_PrintUnformatted(json);
-    if (!text) return 0;
+    if (!text) {
+        return 0;
+    }
     uint32_t crc = esp_crc32_le(0, (const uint8_t *)text, (uint32_t)strlen(text));
     free(text);
     return crc;
@@ -26,7 +28,7 @@ static uint32_t json_crc(const cJSON *json)
 
 static esp_err_t append_json(const char *path, cJSON *json)
 {
-    uint32_t crc = json_crc(json);
+    uint32_t crc = memory_json_crc(json);
     if (!crc || !cJSON_AddNumberToObject(json, "crc32", crc)) {
         cJSON_Delete(json);
         return ESP_ERR_NO_MEM;
@@ -47,7 +49,7 @@ static bool detach_valid_crc(cJSON *json)
         cJSON_Delete(stored);
         return false;
     }
-    bool valid = (uint32_t)stored->valuedouble == json_crc(json);
+    bool valid = (uint32_t)stored->valuedouble == memory_json_crc(json);
     cJSON_Delete(stored);
     return valid;
 }
@@ -87,8 +89,11 @@ static bool parse_event(cJSON *json, memory_record_t *out)
     return true;
 }
 
-static void erase_entry(memory_state_t *state, size_t index)
+void memory_erase_entry(memory_state_t *state, size_t index)
 {
+    if (!state || index >= state->count) {
+        return;
+    }
     if (index + 1 < state->count) {
         memmove(&state->entries[index], &state->entries[index + 1],
                 (state->count - index - 1) * sizeof(state->entries[0]));
@@ -127,7 +132,7 @@ static esp_err_t restore_tombstone_line(const char *line, void *ctx)
         memory_id_t target = (memory_id_t)id->valuedouble;
         for (size_t i = 0; i < state->count; i++) {
             if (state->entries[i].record.id == target) {
-                erase_entry(state, i);
+                memory_erase_entry(state, i);
                 break;
             }
         }

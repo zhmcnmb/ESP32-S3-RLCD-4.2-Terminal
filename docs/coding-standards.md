@@ -30,7 +30,7 @@ app_runtime                 启动顺序、功能注册、降级策略
 - `board_rlcd42`、显示、音频、网络、SD 等平台 Module 不得依赖 UI、语音、agent 或业务 Module。
 - 违反依赖方向说明 Module 归属错误：调整 Module 或把交互收敛到 `sys_state`，不得开临时 include 后门。
 
-**R0 已完成**：`ui_pages` 四个页面(`page_home`/`page_env_monitor`/`page_quota`/`page_weather`)已全部迁移为只读 `sys_state` 快照，不再直接依赖传感器/电池/网络/SD/服务层组件；`page_diag.c` 保留但已从 `ui_manager` 注册中移除，只作为"旧式直读页面"的反面参照，不要照抄它的模式。新增页面从第一天起就必须走 `sys_state`。
+**R0 已完成**：`ui_pages` 三个页面(`page_home`/`page_env_monitor`/`page_weather`)已全部迁移为只读 `sys_state` 快照，不再直接依赖传感器/电池/网络/SD/服务层组件；`page_diag.c` 保留但已从 `ui_manager` 注册中移除，只作为"旧式直读页面"的反面参照，不要照抄它的模式。新增页面从第一天起就必须走 `sys_state`。
 
 ## 2. Module Interface、深度与 seam
 
@@ -149,7 +149,6 @@ typedef struct {
 | ui_task | 4096 | 5 | ui_manager（消费input_manager语义事件；无输入时1s周期tick） |
 | sys_state_task | 3072 | 2 | sys_state（10s轮询瞬时温湿度/电池/WiFi/SD状态，写入共享快照） |
 | env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV，同步推送sys_state） |
-| claude_quota_task | 4096 | 3 | claude_quota_client（USB供电60s、仅电池300s轮询Mac桥接服务，mDNS+HTTP+cJSON解析，推送sys_state） |
 | weather_task | 8192 | 3 | weather_client（USB供电15分钟、仅电池30分钟直连QWeather，TLS+gzip+cJSON解析，经cloud_transport，推送sys_state） |
 | wakeword_task | 8192 | 5(CPU1) | wakeword（AFE feed+fetch合并task，MultiNet命令词+VAD检测+语音段缓冲；固定CPU1，避免与CPU0的WiFi/lwIP协议栈争抢触发watchdog——真机踩过CPU0饿死IDLE0的坑） |
 | voice_assistant_task | 12288 | 4(CPU0) | voice_assistant（单轮 Wake→ASR→Chat→TTS 编排+状态机；固定CPU0避免与CPU1的wakeword prio5互抢被饿死；处理轮次期间停 wakeword；拆分 voice_wav.c/voice_tts_stream.c 压红线） |
@@ -162,7 +161,7 @@ typedef struct {
 ## 8. 云端与持久化约定
 
 - `llm_provider` 的生产 Adapter 只允许 SiliconFlow 与 DeepSeek；模型名、base URL、超时和凭据引用配置化，业务 Module 不得硬编码供应商 URL。
-- Jarvis 核心功能必须由开发板直接运行或直接调用云 API，不得依赖 Mac/PC 常驻进程。唯一例外是保留的 Claude 额度页；Mac bridge 离线时只能让该页降级，不能影响语音、agent、记忆、任务、天气或环境。
+- Jarvis 核心功能必须由开发板直接运行或直接调用云 API，不得依赖任何 Mac/PC 常驻进程。
 - ASR/TTS 可通过 SiliconFlow，LLM API 不可用时必须释放网络/音频资源并回到可交互状态；不得把模型请求无限重试。
 - 所有 agent 会话、Skill、任务和长期记忆数据经 `storage_sd` 管理，使用相对路径；模型和工具不得传入任意文件路径。
 - `web_extract` 只允许抽取同轮 `web_search` 返回、且通过公共 DNS 主机名校验的 URL；必须限制响应和正文长度，禁止回退为任意 URL fetch。
@@ -196,7 +195,7 @@ typedef struct {
 - [ ] BOOT 文案对应真实命令或确认动作，不把缓存重画伪装成刷新
 - [ ] 新任务已在第7节表格登记
 - [ ] 新的云/SD/记忆逻辑未泄漏 provider、路径或索引细节到调用方
-- [ ] 关闭 Mac/PC 辅助进程后，除 Claude 额度页外的功能仍可独立运行
+- [ ] 关闭 Mac/PC 辅助进程后，全部功能仍可独立运行
 - [ ] 新摘取的 vendor 代码已在 provenance 登记
 - [ ] 密钥没进仓库
 - [ ] 真机验证过（不是只编译通过）

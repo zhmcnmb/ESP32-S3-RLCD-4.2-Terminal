@@ -15,7 +15,6 @@ extern "C" {
  *   NEXT (KEY短按)    -> 切换到下一页
  *   ACTION (BOOT短按) -> UI_KEY_ACTION 下发给当前页
  *   BACK (BOOT长按)   -> 语音活动时全局取消，否则 UI_KEY_BACK 下发给当前页
- *   VOICE             -> 保留枚举兼容，P5.2 起不发布、不显示占位
  *
  * 任务: ui_task, 栈4096, 优先级5 (登记于 docs/coding-standards.md 第7节)
  */
@@ -31,9 +30,6 @@ esp_err_t ui_manager_register_page(const ui_page_t *page);
 
 /* 启动UI任务，进入首个已注册页面 */
 esp_err_t ui_manager_start(void);
-
-/* 主动跳页 */
-void ui_manager_goto(int index);
 
 #ifdef __cplusplus
 }

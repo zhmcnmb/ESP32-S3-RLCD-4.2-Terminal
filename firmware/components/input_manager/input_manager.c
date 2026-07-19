@@ -45,8 +45,7 @@ static bool update_button(button_state_t *state, bool raw_pressed)
     return true;
 }
 
-/* KEY 短按 NEXT；长按暂不发布事件（WakeNet 是默认语音入口，未验证前不占位）。
- * BOOT 短按 ACTION、长按 BACK（上层按上下文解读为取消）。 */
+/* KEY短按 NEXT；长按不发布。BOOT 短按 ACTION、长按 BACK。 */
 static void poll_gpio(void)
 {
     static button_state_t key;
@@ -56,7 +55,7 @@ static void poll_gpio(void)
     if (key.pressed) {
         key.held_ms += POLL_INTERVAL_MS;
         if (!key.long_fired && key.held_ms >= LONG_PRESS_MS) {
-            key.long_fired = true; /* 吞掉随后的短按，不发布用户可见事件 */
+            key.long_fired = true;
         }
     } else if (key_changed) {
         if (!key.long_fired) {

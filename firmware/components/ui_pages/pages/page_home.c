@@ -112,18 +112,12 @@ static void on_tick(void)
     draw(); /* 每秒刷新以跟上时钟秒数(规范第12节: 首页时间每秒更新) */
 }
 
-static bool on_key(ui_key_event_t evt)
-{
-    (void)evt;
-    return false; /* 普通只读页不消费 BOOT；KEY NEXT 由 ui_manager 处理 */
-}
-
 static const ui_page_t s_page = {
     .name = "home",
     .on_enter = on_enter,
     .on_exit = NULL,
     .on_tick = on_tick,
-    .on_key = on_key,
+    .on_key = NULL,
 };
 
 const ui_page_t *page_home_get(void)

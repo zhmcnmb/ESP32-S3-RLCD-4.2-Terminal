@@ -1,4 +1,3 @@
-#include <stdio.h>
 #include <string.h>
 
 #include "display_st7305.h"

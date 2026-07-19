@@ -7,7 +7,7 @@
 
 ## 1. 产品边界
 
-设备是身份、状态、会话、记忆、任务和权限的唯一权威；云端仅提供 ASR、LLM、TTS 与受限公开网络检索。Mac bridge 只服务 Claude 用量页，离线时不得影响 Jarvis、语音、天气、记忆或提醒。
+设备是身份、状态、会话、记忆、任务和权限的唯一权威；云端仅提供 ASR、LLM、TTS 与受限公开网络检索；不得依赖 Mac/PC 常驻进程。
 
 当前不做：任意代码或 shell 执行、动态安装工具、并行工具、多智能体、Cron、Home Assistant、Telegram、Browser、MCP 和远程执行。它们没有真实需求前不进入固件。
 
@@ -86,14 +86,14 @@ MultiNet 命令词“贾维斯”
 ## 4. 配置与数据位置
 
 - 本地凭据只放 `firmware/main/secrets.h`，模板是 `secrets.h.example`，不得提交密钥。
-- `JINA_API_KEY` 为空时只禁用 Web 工具；Claude bridge 不可用时只降级额度页。
+- `JINA_API_KEY` 为空时只禁用 Web 工具。
 - 当前会话：`agent/sessions/current.jsonl`；无 SD 时退化为 RAM。
 - 改动固件显示字符串或 `tools/charset.txt` 后必须运行 `python3 tools/gen_font.py`，不要手改 `font_cn16.c`。
 
 ## 5. 资源与降级原则
 
 - 音频与大缓冲显式放 PSRAM 或 DMA 能力内存；网络、SD、模型服务失败必须返回错误或降级，服务层不得 `ESP_ERROR_CHECK`。
-- 每 300 秒记录内部堆与 PSRAM 水位。天气在电池供电时降为 30 分钟轮询，额度页降为 300 秒；USB 供电后自动恢复。
+- 每 300 秒记录内部堆与 PSRAM 水位。天气在电池供电时降为 30 分钟轮询；USB 供电后自动恢复。
 - `memory_store_task`、`scheduler_task`、临时 TTS 任务的栈、优先级以 `coding-standards.md` 的任务表为准。
 
 ## 6. 当前阶段状态

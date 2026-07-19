@@ -1,5 +1,6 @@
 #include "env_logger.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <time.h>
 
@@ -14,6 +15,15 @@ static const char *TAG = "env_logger";
 
 #define SAMPLE_INTERVAL_MS (60 * 1000)
 #define CSV_PATH "env.csv"
+#define ENV_LOGGER_HISTORY_LEN 60 /* 60点 × 60s = 1小时趋势窗口 */
+
+typedef struct {
+    time_t timestamp;
+    float temperature;
+    float humidity;
+} env_logger_sample_t;
+
+static int get_history(env_logger_sample_t *out, int count);
 
 static env_logger_sample_t s_ring[ENV_LOGGER_HISTORY_LEN];
 static int s_ring_head = 0;  /* 下一个写入位置 */
@@ -48,14 +58,13 @@ static void push_sample(const env_logger_sample_t *s)
     portEXIT_CRITICAL(&s_lock);
 }
 
-/* 每次新采样后把最新历史整体推给 sys_state，趋势页只从 sys_state 读，
- * 不再直接依赖 env_logger_get_history()(R0页面迁移时会切换) */
+/* 发布历史快照，趋势页不直接读取 env_logger。 */
 static void publish_history_snapshot(void)
 {
     static env_logger_sample_t hist[ENV_LOGGER_HISTORY_LEN];
     static sys_state_env_sample_t conv[ENV_LOGGER_HISTORY_LEN];
 
-    int n = env_logger_get_history(hist, ENV_LOGGER_HISTORY_LEN);
+    int n = get_history(hist, ENV_LOGGER_HISTORY_LEN);
     for (int i = 0; i < n; i++) {
         conv[i].timestamp = hist[i].timestamp;
         conv[i].temperature = hist[i].temperature;
@@ -98,7 +107,7 @@ esp_err_t env_logger_init(void)
     return ESP_OK;
 }
 
-int env_logger_get_history(env_logger_sample_t *out, int count)
+static int get_history(env_logger_sample_t *out, int count)
 {
     if (!out || count <= 0) {
         return 0;
@@ -114,7 +123,3 @@ int env_logger_get_history(env_logger_sample_t *out, int count)
     return n;
 }
 
-uint32_t env_logger_sample_count(void)
-{
-    return s_total_count;
-}
