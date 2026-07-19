@@ -38,8 +38,6 @@ void app_main(void)
         .wifi_ssid = WIFI_SSID,
         .wifi_password = WIFI_PASSWORD,
         .timezone = TIMEZONE,
-        .bridge_mdns_host = BRIDGE_MDNS_HOST,
-        .bridge_port = BRIDGE_PORT,
         .qweather_api_key = QWEATHER_API_KEY,
         .qweather_api_host = QWEATHER_API_HOST,
         .qweather_location = QWEATHER_LOCATION,

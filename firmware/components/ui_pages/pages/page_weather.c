@@ -1,6 +1,5 @@
 #include <stdio.h>
 #include <string.h>
-#include <time.h>
 
 #include "display_st7305.h"
 #include "esp_log.h"
@@ -91,18 +90,12 @@ static void on_tick(void)
     }
 }
 
-static bool on_key(ui_key_event_t evt)
-{
-    (void)evt;
-    return false;
-}
-
 static const ui_page_t s_page = {
     .name = "weather",
     .on_enter = on_enter,
     .on_exit = NULL,
     .on_tick = on_tick,
-    .on_key = on_key,
+    .on_key = NULL,
 };
 
 const ui_page_t *page_weather_get(void)

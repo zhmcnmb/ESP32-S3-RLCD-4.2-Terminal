@@ -16,9 +16,8 @@
 ## 功能规划
 
 1. ✅ 低功耗桌面时钟 + 天气显示（和风天气，P0-P3已完成并真机验证）
-2. 语音交互（唤醒词 + LLM对话，P5未开始）
+2. 语音交互（唤醒词 + LLM对话 + 流式TTS，P5已完成并真机验证）
 3. ✅ 环境监测记录（温湿度 + SD卡打点趋势，P2已完成并真机验证）
-4. ✅ Claude Code 用量额度显示（需配合 `bridge/` 本地桥接服务，P4已完成并真机验证）
 
 完整分阶段路线图见 [`CLAUDE.md`](CLAUDE.md)。
 
@@ -34,8 +33,7 @@ idf.py build flash monitor
 ## 目录结构
 
 ```
-.
 ├── docs/           # 硬件引脚表、vendor代码来源记录、开发规范
 ├── firmware/       # ESP-IDF固件工程
-└── bridge/         # Mac本地桥接服务：Claude用量代理，已实现(P4)。天气(P3)已改为设备直连，不再经bridge
+└── docs/           # 硬件引脚表、vendor代码来源记录、开发规范；原bridge/已随Claude用量页一并移除
 ```

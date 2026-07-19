@@ -28,15 +28,6 @@ void agent_text_reset(agent_text_t *text)
     }
 }
 
-void agent_text_free(agent_text_t *text)
-{
-    if (!text) {
-        return;
-    }
-    free(text->data);
-    memset(text, 0, sizeof(*text));
-}
-
 static esp_err_t ensure_capacity(agent_text_t *text, size_t need)
 {
     if (need == SIZE_MAX) {

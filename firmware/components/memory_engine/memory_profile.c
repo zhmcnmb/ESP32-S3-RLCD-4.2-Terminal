@@ -21,14 +21,6 @@ typedef struct {
     bool valid;
 } profile_slot_t;
 
-static uint32_t json_crc(const cJSON *json)
-{
-    char *text = cJSON_PrintUnformatted(json);
-    if (!text) return 0;
-    uint32_t crc = esp_crc32_le(0, (const uint8_t *)text, (uint32_t)strlen(text));
-    free(text);
-    return crc;
-}
 
 static bool parse_u32(const cJSON *item, uint32_t *out)
 {
@@ -54,7 +46,7 @@ static bool valid_crc(cJSON *json)
 {
     cJSON *stored = cJSON_DetachItemFromObjectCaseSensitive(json, "crc32");
     uint32_t crc = 0;
-    bool valid = parse_u32(stored, &crc) && crc == json_crc(json);
+    bool valid = parse_u32(stored, &crc) && crc == memory_json_crc(json);
     cJSON_Delete(stored);
     return valid;
 }
@@ -203,7 +195,7 @@ esp_err_t memory_profile_write(memory_state_t *state)
             return err;
         }
     }
-    uint32_t crc = json_crc(json);
+    uint32_t crc = memory_json_crc(json);
     if (!crc || !cJSON_AddNumberToObject(json, "crc32", crc)) {
         cJSON_Delete(json);
         return ESP_ERR_NO_MEM;

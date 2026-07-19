@@ -7,8 +7,7 @@
 #include "font_cn16.h"
 
 /* 8×8点阵字体，覆盖ASCII 0x20(space)~0x5A(Z)，bit7为最左像素。
- * 索引 = ch - 0x20。小写字母在绘制时转为大写，超范围字符画空心框。
- * 注意: 不含中文，中文需等LVGL接入后用字库 */
+ * 索引 = ch - 0x20。小写字母在绘制时转为大写，超范围字符画空心框。 */
 #define FONT_FIRST_CH 0x20
 #define FONT_LAST_CH  0x5A
 

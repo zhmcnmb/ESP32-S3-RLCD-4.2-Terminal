@@ -23,8 +23,6 @@ const ui_page_t *page_diag_get(void);
 /* 环境趋势页: 温湿度历史折线图，数据来自 sys_state */
 const ui_page_t *page_env_monitor_get(void);
 
-/* Claude用量页: 5小时/7天订阅用量窗口；Mac 离线独立降级 */
-const ui_page_t *page_quota_get(void);
 
 /* 天气页: 和风天气当前实况，数据来自 sys_state */
 const ui_page_t *page_weather_get(void);

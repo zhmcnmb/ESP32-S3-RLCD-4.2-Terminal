@@ -61,7 +61,7 @@ static size_t active_count_locked(void)
     return count;
 }
 
-/* 紧凑键名把16条、每条95B且全部需转义的极端输入仍压在4KB原子替换上限内。 */
+/* 紧凑键名把16条、每条96B且全部需转义的极端输入仍压在4KB原子替换上限内。 */
 static bool encode_task(cJSON *array, const scheduler_task_info_t *info)
 {
     cJSON *obj = cJSON_CreateObject();

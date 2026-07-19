@@ -7,7 +7,6 @@
 #include "audio_pipeline.h"
 #include "battery.h"
 #include "board_rlcd42.h"
-#include "claude_quota_client.h"
 #include "display_st7305.h"
 #include "env_logger.h"
 #include "esp_check.h"
@@ -79,7 +78,6 @@ static void start_network(const app_runtime_config_t *cfg)
         ESP_LOGW(TAG, "WiFi连接超时，后台继续重试");
     }
 
-    log_if_failed(claude_quota_client_init(cfg->bridge_mdns_host, cfg->bridge_port), "Claude用量客户端启动");
     log_if_failed(weather_client_init(cfg->qweather_api_key, cfg->qweather_api_host, cfg->qweather_location),
                   "天气客户端启动");
 
@@ -124,7 +122,6 @@ esp_err_t app_runtime_start(const app_runtime_config_t *cfg)
     ESP_RETURN_ON_ERROR(ui_manager_register_page(page_home_get()), TAG, "register home");
     ESP_RETURN_ON_ERROR(ui_manager_register_page(page_weather_get()), TAG, "register weather");
     ESP_RETURN_ON_ERROR(ui_manager_register_page(page_env_monitor_get()), TAG, "register env");
-    ESP_RETURN_ON_ERROR(ui_manager_register_page(page_quota_get()), TAG, "register quota");
     ESP_RETURN_ON_ERROR(ui_manager_start(), TAG, "ui_manager_start");
 
     start_network(cfg);

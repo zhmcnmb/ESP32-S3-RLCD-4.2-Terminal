@@ -136,22 +136,6 @@ void sys_state_apply_weather(bool available, float temperature, int humidity,
     xSemaphoreGive(s_lock);
 }
 
-void sys_state_apply_quota(bool available, float used_5h, float used_7d,
-                           time_t resets_5h, time_t resets_7d, time_t updated_at)
-{
-    if (!s_lock) {
-        return;
-    }
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_state.quota_available = available;
-    s_state.quota_used_5h = used_5h;
-    s_state.quota_used_7d = used_7d;
-    s_state.quota_resets_5h = resets_5h;
-    s_state.quota_resets_7d = resets_7d;
-    s_state.quota_updated_at = updated_at;
-    bump_version_locked();
-    xSemaphoreGive(s_lock);
-}
 
 void sys_state_apply_voice(sys_voice_phase_t phase, uint32_t turn_id, const char *reason)
 {
@@ -229,7 +213,7 @@ bool sys_state_consume_reminder(char *out, size_t out_len)
 }
 
 /* 没有专属后台任务的"环境状态"由这里统一采集：瞬时温湿度、电池、WiFi连接、
- * SD挂载。和 env_logger(60s历史采样)、weather_client/claude_quota_client
+ * SD挂载。和 env_logger(60s历史采样)、weather_client
  * (各自mDNS+HTTP轮询)相互独立，互不阻塞——本任务只做本地读取，没有网络IO */
 static void poll_task(void *arg)
 {

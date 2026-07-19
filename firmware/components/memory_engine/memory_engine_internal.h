@@ -5,6 +5,7 @@
 #include <stdint.h>
 
 #include "memory_engine.h"
+#include "cJSON.h"
 
 #define MEMORY_ENGINE_RECORD_CAPACITY 64
 #define MEMORY_ENGINE_EVENT_PATH "agent/memory/events-0001.jsonl"
@@ -17,7 +18,6 @@
 
 typedef struct {
     memory_record_t record;
-    bool deleted;
 } memory_entry_t;
 
 typedef struct {
@@ -33,6 +33,8 @@ const char *memory_type_name(memory_type_t type);
 bool memory_type_parse(const char *name, memory_type_t *out_type);
 uint8_t memory_type_importance(memory_type_t type);
 
+uint32_t memory_json_crc(const cJSON *json);
+void memory_erase_entry(memory_state_t *state, size_t index);
 
 bool memory_record_expired(const memory_record_t *record, time_t now);
 esp_err_t memory_recall_build(const memory_state_t *state, const memory_query_t *query,
