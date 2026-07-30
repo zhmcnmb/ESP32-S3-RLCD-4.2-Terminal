@@ -138,17 +138,32 @@ static cJSON *new_record(agent_role_t role, const char *content, const char *too
     if (!record) {
         return NULL;
     }
-    cJSON_AddNumberToObject(record, "v", 1);
-    cJSON_AddStringToObject(record, "role", name);
+    if (!cJSON_AddNumberToObject(record, "v", 1)
+        || !cJSON_AddStringToObject(record, "role", name)) {
+        cJSON_Delete(record);
+        return NULL;
+    }
     if (content) {
-        cJSON_AddStringToObject(record, "content", content);
+        if (!cJSON_AddStringToObject(record, "content", content)) {
+            cJSON_Delete(record);
+            return NULL;
+        }
     } else {
-        cJSON_AddNullToObject(record, "content");
+        if (!cJSON_AddNullToObject(record, "content")) {
+            cJSON_Delete(record);
+            return NULL;
+        }
     }
     if (tool_call_id) {
-        cJSON_AddStringToObject(record, "tool_call_id", tool_call_id);
+        if (!cJSON_AddStringToObject(record, "tool_call_id", tool_call_id)) {
+            cJSON_Delete(record);
+            return NULL;
+        }
     }
-    cJSON_AddNumberToObject(record, "timestamp", (double)time(NULL));
+    if (!cJSON_AddNumberToObject(record, "timestamp", (double)time(NULL))) {
+        cJSON_Delete(record);
+        return NULL;
+    }
     return record;
 }
 
@@ -184,7 +199,11 @@ void agent_session_record_tool_calls(const llm_tool_call_t *calls, int count)
         cJSON_AddStringToObject(call, "type", "function");
         cJSON_AddStringToObject(function, "name", calls[i].name);
         cJSON_AddStringToObject(function, "arguments", calls[i].arguments);
-        cJSON_AddItemToArray(array, call);
+        if (!cJSON_AddItemToArray(array, call)) {
+            cJSON_Delete(call);
+            cJSON_Delete(record);
+            return;
+        }
     }
     persist_record(record);
 }

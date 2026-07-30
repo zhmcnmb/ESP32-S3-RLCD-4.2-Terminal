@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "skill_manager.h"
 #include "memory_engine.h"
+#include "web_client.h"
 
 static const char *TAG = "agent_runtime";
 static const char *SYSTEM_PROMPT =
@@ -28,6 +29,7 @@ static agent_text_t s_system_prompt;
 static agent_text_t s_turn_system;
 static bool s_initialized;
 static bool s_running;
+static bool s_seen_tool_calls;   /* 本轮模型响应已出现 tool_calls */
 
 typedef struct {
     llm_tool_call_t calls[LLM_MAX_TOOL_CALLS];
@@ -47,8 +49,15 @@ static bool cancelled(const volatile bool *flag)
 static void on_content_delta(const char *delta, void *ctx)
 {
     (void)ctx;
-    if (delta && agent_text_append(&s_reply, delta, strlen(delta)) == ESP_OK
-        && s_reply_delta_cb) {
+    if (!delta) {
+        return;
+    }
+    if (agent_text_append(&s_reply, delta, strlen(delta)) != ESP_OK) {
+        return;
+    }
+    /* 工具回合的 content 主要由 llm_provider 在首个 tool_call 分片后抑制；
+     * 此处兜底 on_tool_calls 先于 delta 到达的实现 */
+    if (!s_seen_tool_calls && s_reply_delta_cb) {
         s_reply_delta_cb(delta, s_reply_delta_ctx);
     }
 }
@@ -56,6 +65,7 @@ static void on_content_delta(const char *delta, void *ctx)
 static void on_tool_calls(const llm_tool_call_t *calls, int count, void *ctx)
 {
     (void)ctx;
+    s_seen_tool_calls = true;
     s_capture.count = 0;
     if (!calls || count <= 0 || count > LLM_MAX_TOOL_CALLS) {
         return;
@@ -70,6 +80,7 @@ static esp_err_t run_model(const llm_message_t *messages, int message_count,
 {
     agent_text_reset(&s_reply);
     memset(&s_capture, 0, sizeof(s_capture));
+    s_seen_tool_calls = false;
     llm_stream_sink_t sink = {
         .on_content_delta = on_content_delta,
         .on_tool_calls = on_tool_calls,
@@ -204,6 +215,8 @@ static esp_err_t run_loop(llm_message_t *messages, const char *user_text,
                           agent_runtime_tool_state_cb_t state_cb, void *state_ctx,
                           llm_tool_call_t *turn_calls, char *tool_results, const char **out_reply)
 {
+    /* 清空上一轮的网页提取白名单，确保 extract 只搜索本轮结果 */
+    web_client_reset_sources();
     esp_err_t prompt_err = build_turn_system(user_text);
     if (prompt_err != ESP_OK) return prompt_err;
     agent_memory_tools_prepare(user_text);

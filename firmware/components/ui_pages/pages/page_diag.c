@@ -8,10 +8,9 @@
 
 /*
  * 诊断页: 显示硬件自检结果。
- * 同时作为页面接口的参照范例——新增页面照此结构写:
- *   1. static 状态 + static 绘制函数
- *   2. 实现 on_enter/on_exit/on_tick/on_key (用不到的填NULL)
- *   3. 文件末尾暴露 static const ui_page_t 与 getter
+ * 反面参照——此页绕过 sys_state 直接读硬件（I2C/SD卡），使用存储层头文件，
+ * 不符合"页面不准自己发HTTP/读传感器，数据从服务层取"的契约。新增页面切勿模仿。
+ * 保留作为旧版诊断入口，不注册进翻页。
  */
 
 static const char *TAG = "page_diag";

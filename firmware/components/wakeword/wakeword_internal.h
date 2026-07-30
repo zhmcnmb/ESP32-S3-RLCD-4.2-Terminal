@@ -32,7 +32,7 @@ typedef struct {
     srmodel_list_t *models;
     const esp_mn_iface_t *multinet;
     model_iface_data_t *mn_data;
-    TaskHandle_t task;
+    TaskHandle_t volatile task; /* 检测任务退出前自清，wakeword_stop以此join */
     volatile bool running;
     detect_state_t state;
     bool vad_was_active;

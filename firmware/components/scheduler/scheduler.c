@@ -34,7 +34,7 @@ static uint32_t s_next_id = 1;
 static bool s_initialized;
 static bool s_storage_warning_logged;
 static bool s_time_was_trusted;
-
+static time_t s_last_tick; /* 上次tick时间，检测NTP大幅回拨/前跳 */
 static void warn_storage_once_locked(void)
 {
     if (!s_storage_warning_logged) {
@@ -105,7 +105,6 @@ static esp_err_t persist_locked(void)
     esp_err_t err = len > SCHEDULER_FILE_MAX ? ESP_ERR_INVALID_SIZE
                                                : storage_sd_atomic_replace(SCHEDULER_FILE_PATH, text, len);
     free(text);
-    if (err != ESP_OK) ESP_LOGW(TAG, "保存提醒表失败: %s", esp_err_to_name(err));
     return err;
 }
 
@@ -260,6 +259,13 @@ static void process_due_tasks(void)
         s_time_was_trusted = true;
         if (normalize_after_clock_sync_locked(now)) persist_best_effort_locked();
     }
+    /* NTP大幅回拨/前跳(>60s)时重新normalize，避免过期任务积压或间隔跑偏 */
+    if (s_last_tick != 0) {
+        time_t diff = now > s_last_tick ? now - s_last_tick : s_last_tick - now;
+        if (diff > 60) {
+            if (normalize_after_clock_sync_locked(now)) persist_best_effort_locked();
+        }
+    }
     for (size_t i = 0; i < SCHEDULER_TASK_MAX; i++) {
         scheduler_entry_t *entry = &s_tasks[i];
         if (!entry->active || entry->info.fire_at > now) continue;
@@ -272,6 +278,7 @@ static void process_due_tasks(void)
         persist_best_effort_locked();
         break; /* 邮箱单槽，一次最多成功投递一条 */
     }
+    s_last_tick = now;
     xSemaphoreGive(s_lock);
 }
 

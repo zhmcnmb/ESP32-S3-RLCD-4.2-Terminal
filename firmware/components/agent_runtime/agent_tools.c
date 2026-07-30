@@ -12,6 +12,7 @@
 #include "cJSON.h"
 #include "esp_heap_caps.h"
 #include "esp_log.h"
+#include "esp_http_client.h"
 #include "skill_manager.h"
 #include "sys_state.h"
 #include "web_client.h"
@@ -354,7 +355,21 @@ esp_err_t agent_tools_execute(const llm_tool_call_t *call, char *out, size_t out
         : agent_scheduler_tools_execute(call->name, args, &result);
     cJSON_Delete(args);
     if (err != ESP_OK || !result) {
-        write_error(out, out_len, "参数校验失败");
+        const char *reason = "工具执行失败";
+        if (err == ESP_ERR_TIMEOUT) {
+            reason = "网络请求超时";
+        } else if (err == ESP_ERR_HTTP_CONNECT) {
+            reason = "网络连接失败";
+        } else if (err == ESP_ERR_NO_MEM) {
+            reason = "系统资源不足";
+        } else if (err == ESP_ERR_INVALID_STATE) {
+            reason = "系统忙，请稍后重试";
+        } else if (err == ESP_ERR_NOT_FOUND) {
+            reason = "未找到相关信息";
+        } else if (err == ESP_ERR_INVALID_SIZE) {
+            reason = "结果超出大小限制";
+        }
+        write_error(out, out_len, reason);
         cJSON_Delete(result);
         return ESP_OK;
     }

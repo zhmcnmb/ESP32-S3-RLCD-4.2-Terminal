@@ -33,7 +33,7 @@ const char *memory_type_name(memory_type_t type);
 bool memory_type_parse(const char *name, memory_type_t *out_type);
 uint8_t memory_type_importance(memory_type_t type);
 
-uint32_t memory_json_crc(const cJSON *json);
+esp_err_t memory_json_crc(const cJSON *json, uint32_t *out);
 void memory_erase_entry(memory_state_t *state, size_t index);
 
 bool memory_record_expired(const memory_record_t *record, time_t now);

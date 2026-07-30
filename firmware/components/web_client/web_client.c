@@ -120,6 +120,12 @@ esp_err_t web_client_init(const char *api_key)
     return ESP_OK;
 }
 
+void web_client_reset_sources(void)
+{
+    memset(s_source_urls, 0, sizeof(s_source_urls));
+    s_source_count = 0;
+}
+
 bool web_client_is_available(void)
 {
     return s_initialized;

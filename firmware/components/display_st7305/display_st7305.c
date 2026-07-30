@@ -111,13 +111,25 @@ esp_err_t st7305_init(void)
         TAG, "panel io");
 
     s_fb = heap_caps_malloc(FB_SIZE, MALLOC_CAP_DMA);
-    ESP_RETURN_ON_FALSE(s_fb, ESP_ERR_NO_MEM, TAG, "fb alloc");
+    if (!s_fb) {
+        esp_lcd_panel_io_del(s_io);
+        s_io = NULL;
+        ESP_LOGE(TAG, "fb alloc");
+        return ESP_ERR_NO_MEM;
+    }
     memset(s_fb, 0xFF, FB_SIZE);
 
     panel_reset();
     s_tx_err = ESP_OK;
     panel_init_sequence();
-    ESP_RETURN_ON_ERROR(s_tx_err, TAG, "init sequence failed");
+    if (s_tx_err != ESP_OK) {
+        heap_caps_free(s_fb);
+        s_fb = NULL;
+        esp_lcd_panel_io_del(s_io);
+        s_io = NULL;
+        ESP_LOGE(TAG, "init sequence failed");
+        return s_tx_err;
+    }
 
     ESP_LOGI(TAG, "init OK, fb=%d bytes", FB_SIZE);
     return ESP_OK;

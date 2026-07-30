@@ -53,8 +53,19 @@ esp_err_t board_init(void)
         return ESP_OK;
     }
     ESP_RETURN_ON_ERROR(init_i2c(), TAG, "i2c init failed");
-    ESP_RETURN_ON_ERROR(init_lcd_spi_bus(), TAG, "lcd spi bus init failed");
-    ESP_RETURN_ON_ERROR(init_buttons(), TAG, "buttons init failed");
+    if (init_lcd_spi_bus() != ESP_OK) {
+        i2c_del_master_bus(s_i2c_bus);
+        s_i2c_bus = NULL;
+        ESP_LOGE(TAG, "lcd spi bus init failed");
+        return ESP_FAIL;
+    }
+    if (init_buttons() != ESP_OK) {
+        i2c_del_master_bus(s_i2c_bus);
+        s_i2c_bus = NULL;
+        spi_bus_free(BOARD_LCD_SPI_HOST);
+        ESP_LOGE(TAG, "buttons init failed");
+        return ESP_FAIL;
+    }
     s_inited = true;
     ESP_LOGI(TAG, "board init OK (I2C sda=%d scl=%d, LCD spi host=%d, btn boot=%d key=%d)",
              BOARD_I2C_SDA_PIN, BOARD_I2C_SCL_PIN, BOARD_LCD_SPI_HOST,

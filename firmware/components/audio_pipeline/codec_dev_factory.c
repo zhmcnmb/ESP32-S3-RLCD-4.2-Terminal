@@ -94,7 +94,7 @@ esp_codec_dev_handle_t ap_create_es8311(i2s_chan_handle_t tx_handle,
     int rc = esp_codec_dev_open(dev, &fs);
     if (rc != ESP_CODEC_DEV_OK) {
         ESP_LOGE(TAG, "esp_codec_dev_open(es8311) 失败: %d", rc);
-        esp_codec_dev_close(dev);
+        esp_codec_dev_delete(dev); /* close对未open的dev无意义，delete才回收对象 */
         return NULL;
     }
     esp_codec_dev_set_out_vol(dev, 100);
@@ -143,7 +143,7 @@ esp_codec_dev_handle_t ap_create_es7210(i2s_chan_handle_t rx_handle)
     int rc = esp_codec_dev_open(dev, &fs);
     if (rc != ESP_CODEC_DEV_OK) {
         ESP_LOGE(TAG, "esp_codec_dev_open(es7210) 失败: %d", rc);
-        esp_codec_dev_close(dev);
+        esp_codec_dev_delete(dev);
         return NULL;
     }
     esp_codec_dev_set_in_gain(dev, 37.5f); /* ES7210 PGA 上限，远场拾音需要最大模拟增益 */

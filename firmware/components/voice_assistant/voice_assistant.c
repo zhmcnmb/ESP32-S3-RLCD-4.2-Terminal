@@ -205,7 +205,10 @@ static void finish_listening(void)
 {
     esp_err_t err = wakeword_stop();
     if (err != ESP_OK) {
+        /* 停不下来也必须收轮回IDLE，否则s_in_turn永真、状态机卡死LISTENING；
+         * finish_turn里的wakeword_start对残留任务有防重入守卫 */
         ESP_LOGE(TAG, "监听停止失败: %s", esp_err_to_name(err));
+        finish_turn(SYS_VOICE_ERROR, "监听停止失败");
         return;
     }
     finish_turn(SYS_VOICE_IDLE, NULL);
@@ -284,6 +287,10 @@ static void handle_speech_end(void)
     err = run_chat(asr_text, &reply, &streamed);
     if (stage_failed(err, "回答失败")) return;
     if (!streamed) {
+        if (!reply || !reply[0]) {
+            finish_turn(SYS_VOICE_ERROR, "回答失败");
+            return;
+        }
         voice_alert(SYS_VOICE_SPEAKING, NULL);
         err = va_tts_play_clean(reply, &s_cancel, NULL);
         if (stage_failed(err, "播放失败")) return;
@@ -333,12 +340,17 @@ static void voice_task(void *arg)
     esp_err_t err = wakeword_init(wakeword_cb, NULL);
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "wakeword_init失败: %s", esp_err_to_name(err));
+        heap_caps_free(s_utt_buf);
+        s_utt_buf = NULL;
         vTaskDelete(NULL);
         return;
     }
     err = wakeword_start();
     if (err != ESP_OK) {
         ESP_LOGE(TAG, "wakeword_start失败: %s", esp_err_to_name(err));
+        wakeword_deinit();
+        heap_caps_free(s_utt_buf);
+        s_utt_buf = NULL;
         vTaskDelete(NULL);
         return;
     }

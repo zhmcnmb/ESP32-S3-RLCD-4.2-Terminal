@@ -30,6 +30,8 @@ typedef struct {
     llm_tool_call_t tool_calls[LLM_MAX_TOOL_CALLS];
     int tool_call_count;          /* 已见过的最大 index + 1 */
     const llm_stream_sink_t *sink;
+    bool delta_delivered;         /* 本轮已投递任何 content delta */
+    bool truncated;               /* 当前行被截断 */
 } sse_ctx_t;
 
 /* provider URL 分发 */
@@ -98,7 +100,6 @@ static void accumulate_tool_call(sse_ctx_t *ctx, cJSON *tc_item)
         }
     }
 }
-
 /* finish_reason → on_tool_calls 回调触发 */
 static void check_finish_and_flush(sse_ctx_t *ctx, cJSON *choice)
 {
@@ -106,17 +107,20 @@ static void check_finish_and_flush(sse_ctx_t *ctx, cJSON *choice)
     if (!cJSON_IsString(reason) || reason->valuestring[0] == '\0') {
         return;
     }
-    bool has_tool_calls = false;
-    for (int i = 0; i < ctx->tool_call_count && !has_tool_calls; i++) {
+    int compact = 0;
+    for (int i = 0; i < ctx->tool_call_count; i++) {
         if (ctx->tool_calls[i].name[0] != '\0') {
-            has_tool_calls = true;
+            if (compact != i) {
+                ctx->tool_calls[compact] = ctx->tool_calls[i];
+            }
+            compact++;
         }
     }
-    if (has_tool_calls && ctx->sink && ctx->sink->on_tool_calls) {
-        ctx->sink->on_tool_calls(ctx->tool_calls, ctx->tool_call_count, ctx->sink->ctx);
+    ctx->tool_call_count = compact;
+    if (compact > 0 && ctx->sink && ctx->sink->on_tool_calls) {
+        ctx->sink->on_tool_calls(ctx->tool_calls, compact, ctx->sink->ctx);
     }
 }
-
 /* 处理一条完整的 SSE 行 */
 static esp_err_t process_sse_line(sse_ctx_t *ctx, const char *line)
 {
@@ -142,19 +146,22 @@ static esp_err_t process_sse_line(sse_ctx_t *ctx, const char *line)
     cJSON *choice = cJSON_GetArrayItem(choices, 0);
     cJSON *delta  = cJSON_GetObjectItem(choice, "delta");
     if (delta) {
-        cJSON *content = cJSON_GetObjectItem(delta, "content");
-        if (cJSON_IsString(content) && content->valuestring[0] != '\0'
-            && ctx->sink && ctx->sink->on_content_delta) {
-            ctx->sink->on_content_delta(content->valuestring, ctx->sink->ctx);
-        }
-    }
-    if (delta) {
         cJSON *tc_arr = cJSON_GetObjectItem(delta, "tool_calls");
         if (cJSON_IsArray(tc_arr)) {
             int n = cJSON_GetArraySize(tc_arr);
             for (int i = 0; i < n; i++) {
                 accumulate_tool_call(ctx, cJSON_GetArrayItem(tc_arr, i));
             }
+        }
+    }
+    if (delta) {
+        cJSON *content = cJSON_GetObjectItem(delta, "content");
+        /* 已出现 tool_call 后的 content 属于工具回合，不作为回复投递 */
+        if (cJSON_IsString(content) && content->valuestring[0] != '\0'
+            && ctx->tool_call_count == 0
+            && ctx->sink && ctx->sink->on_content_delta) {
+            ctx->sink->on_content_delta(content->valuestring, ctx->sink->ctx);
+            ctx->delta_delivered = true;
         }
     }
     check_finish_and_flush(ctx, choice);
@@ -172,6 +179,12 @@ static esp_err_t sse_chunk_cb(const char *data, size_t len, void *user_ctx)
             continue;
         }
         if (c == '\n') {
+            if (ctx->truncated) {
+                /* 行超长视为响应损坏，整个请求失败 */
+                ctx->truncated = false;
+                ctx->line_len = 0;
+                return ESP_ERR_INVALID_RESPONSE;
+            }
             ctx->line_buf[ctx->line_len] = '\0';
             esp_err_t err = process_sse_line(ctx, ctx->line_buf);
             ctx->line_len = 0;
@@ -180,6 +193,8 @@ static esp_err_t sse_chunk_cb(const char *data, size_t len, void *user_ctx)
             }
         } else if (ctx->line_len < SSE_LINE_MAX - 1) {
             ctx->line_buf[ctx->line_len++] = c;
+        } else {
+            ctx->truncated = true;
         }
     }
     return ESP_OK;
@@ -228,7 +243,6 @@ esp_err_t llm_provider_init(llm_provider_kind_t provider, const char *api_key, c
              s_model);
     return ESP_OK;
 }
-
 esp_err_t llm_provider_chat(const llm_message_t *messages, int message_count,
                             const llm_tool_def_t *tools, int tool_count,
                             const llm_stream_sink_t *sink,
@@ -258,8 +272,9 @@ esp_err_t llm_provider_chat(const llm_message_t *messages, int message_count,
             break;
         }
         result = (err != ESP_OK) ? err : ESP_ERR_HTTP_CONNECT;
-        bool retryable = ((err == ESP_ERR_HTTP_CONNECT || (err == ESP_OK && status != 0))
-                         && (status == 429 || status == 503 || status == 504));
+        bool retryable = !sse_ctx->delta_delivered
+            && ((err == ESP_ERR_HTTP_CONNECT || (err == ESP_OK && status != 0))
+                && (status == 429 || status == 503 || status == 504));
         if (retryable && attempt + 1 < 2) {
             ESP_LOGW(TAG, "HTTP %d on attempt %d, retrying once...", status, attempt + 1);
             continue;

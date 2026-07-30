@@ -122,10 +122,15 @@ static esp_err_t stream_set_request_fields(esp_http_client_handle_t client, cons
         if (n < 0 || (size_t)n >= sizeof(auth_buf)) return ESP_ERR_INVALID_ARG;
     }
     esp_err_t err = esp_http_client_set_url(client, url);
-    if (err == ESP_OK) err = esp_http_client_set_header(client, "Authorization",
-                                                        auth ? auth_buf : NULL);
-    if (err == ESP_OK) err = esp_http_client_set_header(client, "Content-Type", content_type);
-    if (err == ESP_OK) err = esp_http_client_set_header(client, "Accept", accept);
+    if (err == ESP_OK && auth) {
+        err = esp_http_client_set_header(client, "Authorization", auth_buf);
+    }
+    if (err == ESP_OK) {
+        err = esp_http_client_set_header(client, "Content-Type", content_type);
+    }
+    if (err == ESP_OK && accept) {
+        err = esp_http_client_set_header(client, "Accept", accept);
+    }
     return err;
 }
 

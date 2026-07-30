@@ -61,9 +61,10 @@ esp_err_t cloud_transport_conn_post_stream(cloud_stream_conn_t *conn,
                                                  NULL, body, body_len, on_chunk, user_ctx,
                                                  cancel_flag, out_status);
     conn->in_use = false;
-    if (err == ESP_ERR_INVALID_STATE) {
-        ESP_LOGW(TAG, "底层HTTP状态异常，调用方应重建连接");
-        return ESP_FAIL;
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "请求失败(%s)，关闭连接让下次open从干净状态开始",
+                 esp_err_to_name(err));
+        esp_http_client_close(conn->client);
     }
     return err;
 }
