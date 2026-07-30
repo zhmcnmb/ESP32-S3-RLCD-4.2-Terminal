@@ -12,6 +12,7 @@
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
+#include "freertos/idf_additions.h"
 #include "tts_client.h"
 
 static const char *TAG = "voice_tts";
@@ -87,7 +88,7 @@ static void playback_task(void *arg)
     xSemaphoreGive(s_playback_done);
     ESP_LOGI(TAG, "tts_playback_task 栈余 %uB",
              (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 /* tts_client 分片回调：只做固定增益+推入环形缓冲，播放在独立任务里进行。
@@ -145,13 +146,14 @@ static esp_err_t playback_session_start(void)
     if (!s_stream || !s_playback_done || s_playback_active) {
         return ESP_ERR_INVALID_STATE;
     }
+    audio_pipeline_clear_cancel(); /* 清除上轮 finish 超时残留的 cancel 标志 */
     xStreamBufferReset(s_stream);
     xSemaphoreTake(s_playback_done, 0);
     s_stream_closed = false;
     s_playback_result = ESP_OK;
     s_playback_active = true;
-    BaseType_t ok = xTaskCreatePinnedToCore(playback_task, "tts_playback_task",
-                                            TTS_PLAYBACK_TASK_STACK, NULL, 4, NULL, 0);
+    BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(playback_task, "tts_playback_task",
+                                            TTS_PLAYBACK_TASK_STACK, NULL, 4, NULL, 0, MALLOC_CAP_SPIRAM);
     if (ok != pdPASS) {
         s_playback_active = false;
         ESP_LOGE(TAG, "播放任务创建失败");
@@ -293,7 +295,7 @@ static void reply_stream_task(void *arg)
         s_reply_active = false;
         s_reply_result = ESP_ERR_NO_MEM;
         xSemaphoreGive(s_reply_done);
-        vTaskDelete(NULL);
+        vTaskDeleteWithCaps(NULL);
         return;
     }
 
@@ -330,7 +332,7 @@ static void reply_stream_task(void *arg)
     xSemaphoreGive(s_reply_done);
     ESP_LOGI(TAG, "reply_tts_task 栈余 %uB",
              (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
-    vTaskDelete(NULL);
+    vTaskDeleteWithCaps(NULL);
 }
 
 esp_err_t va_reply_stream_start(const volatile bool *cancel_flag)
@@ -370,6 +372,11 @@ size_t va_tts_strip_markdown(const char *src, size_t len, char *out)
     for (size_t i = 0; i < len; i++) {
         char c = src[i];
         if (c == '*' || c == '`' || c == '#' || c == '_') continue;
+        /* Markdown 列表标记 "- " 不朗读(减号无空格后如 3-5 不受影响) */
+        if (c == '-' && i + 1 < len && src[i + 1] == ' ') {
+            i++;
+            continue;
+        }
         out[n++] = c;
     }
     return n;
@@ -382,8 +389,8 @@ esp_err_t va_reply_stream_push_delta(const char *delta)
     if (!delta || !s_reply_active || s_reply_closed) return ESP_ERR_INVALID_STATE;
     if (!s_reply_task_started) {
         s_reply_task_started = true;
-        BaseType_t ok = xTaskCreatePinnedToCore(reply_stream_task, "reply_tts_task", 6144,
-                                                NULL, 4, NULL, 0);
+        BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(reply_stream_task, "reply_tts_task", 6144,
+                                                NULL, 4, NULL, 0, MALLOC_CAP_SPIRAM);
         if (ok != pdPASS) {
             s_reply_result = ESP_ERR_NO_MEM;
             return ESP_ERR_NO_MEM;
@@ -432,7 +439,14 @@ esp_err_t va_reply_stream_finish(void)
     /* 有界等待：每句合成/播放各自有超时，正常远小于60s。异常超时后
      * s_reply_active仍由任务自身清零，未退出前start()拒绝复用，不会并发写流 */
     if (xSemaphoreTake(s_reply_done, pdMS_TO_TICKS(60000)) != pdTRUE) {
-        ESP_LOGE(TAG, "reply_tts_task 未在60s内结束");
+        ESP_LOGE(TAG, "reply_tts_task 未在60s内结束，强制复位");
+        /* cancel 唤醒卡住的 playback_task，复位状态让后续 turn 的 start 能用，
+         * 旧任务泄漏但不阻塞新一轮语音(否则 s_reply_active 永真致连续回答失败) */
+        audio_pipeline_cancel();
+        s_reply_task_started = false;
+        s_playback_active = false;
+        s_stream_closed = true;
+        s_reply_active = false;
         return ESP_ERR_TIMEOUT;
     }
     return s_reply_result;
