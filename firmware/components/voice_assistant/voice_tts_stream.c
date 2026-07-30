@@ -138,19 +138,16 @@ esp_err_t va_tts_stream_init(void)
     return ESP_OK;
 }
 
-esp_err_t va_tts_play(const char *text, const volatile bool *cancel_flag, int *out_status)
+/* playback session：封装 playback_task 生命周期 + s_stream/s_playback_* 状态，
+ * va_tts_play(非流式) 与 reply_stream_task(流式) 共用，消除双套启停样板。 */
+static esp_err_t playback_session_start(void)
 {
-    if (out_status) *out_status = 0;
-    if (!text) return ESP_ERR_INVALID_ARG;
     if (!s_stream || !s_playback_done || s_playback_active) {
         return ESP_ERR_INVALID_STATE;
     }
-    int discarded_status = 0;
-    int *status = out_status ? out_status : &discarded_status;
-    audio_pipeline_clear_cancel();
-    s_stream_closed = false;
     xStreamBufferReset(s_stream);
-    xSemaphoreTake(s_playback_done, 0); /* 清掉可能残留的信号 */
+    xSemaphoreTake(s_playback_done, 0);
+    s_stream_closed = false;
     s_playback_result = ESP_OK;
     s_playback_active = true;
     BaseType_t ok = xTaskCreatePinnedToCore(playback_task, "tts_playback_task",
@@ -160,25 +157,37 @@ esp_err_t va_tts_play(const char *text, const volatile bool *cancel_flag, int *o
         ESP_LOGE(TAG, "播放任务创建失败");
         return ESP_ERR_NO_MEM;
     }
+    return ESP_OK;
+}
 
-    pcm_ctx_t ctx = {
-        .cancel_flag = cancel_flag,
-    };
-    esp_err_t err = tts_client_synthesize(text, on_pcm, &ctx, cancel_flag, status);
-    if (err != ESP_OK && err != ESP_ERR_NOT_FINISHED) {
-        ESP_LOGW(TAG, "TTS合成失败: %s status=%d", esp_err_to_name(err), *status);
-    }
+static esp_err_t playback_session_close(void)
+{
     s_stream_closed = true;
-
-    /* 等播放任务把缓冲播完，保证调用方重启 wakeword 前音频已放完。若底层
-     * codec 写永久阻塞，保留 active 标记拒绝复用共享流缓冲，避免两轮并发写。 */
     if (xSemaphoreTake(s_playback_done, pdMS_TO_TICKS(TTS_PLAYBACK_WAIT_MS)) != pdTRUE) {
         ESP_LOGW(TAG, "播放任务未在%dms内结束", TTS_PLAYBACK_WAIT_MS);
         audio_pipeline_cancel();
-        return ESP_ERR_TIMEOUT;
+        s_playback_result = ESP_ERR_TIMEOUT;
     }
     audio_pipeline_clear_cancel();
-    return s_playback_result != ESP_OK ? s_playback_result : err;
+    return s_playback_result;
+}
+
+esp_err_t va_tts_play(const char *text, const volatile bool *cancel_flag, int *out_status)
+{
+    if (out_status) *out_status = 0;
+    if (!text) return ESP_ERR_INVALID_ARG;
+    int discarded_status = 0;
+    int *status = out_status ? out_status : &discarded_status;
+    audio_pipeline_clear_cancel();
+    esp_err_t err = playback_session_start();
+    if (err != ESP_OK) return err;
+    pcm_ctx_t ctx = { .cancel_flag = cancel_flag };
+    err = tts_client_synthesize(text, on_pcm, &ctx, cancel_flag, status);
+    if (err != ESP_OK && err != ESP_ERR_NOT_FINISHED) {
+        ESP_LOGW(TAG, "TTS合成失败: %s status=%d", esp_err_to_name(err), *status);
+    }
+    esp_err_t pb = playback_session_close();
+    return pb != ESP_OK ? pb : err;
 }
 
 esp_err_t va_tts_play_clean(const char *text, const volatile bool *cancel_flag, int *out_status)
@@ -280,16 +289,7 @@ static void reply_stream_task(void *arg)
 
     /* 启动持续播放任务：跨多句合成复用同一 playback，合成下一句时上一句仍在播，
      * 消除"每句等播完再合成"的句间停顿(va_tts_play 的 per-call reset+wait) */
-    xStreamBufferReset(s_stream);
-    xSemaphoreTake(s_playback_done, 0);
-    s_stream_closed = false;
-    s_playback_result = ESP_OK;
-    s_playback_active = true;
-    BaseType_t pok = xTaskCreatePinnedToCore(playback_task, "tts_playback_task",
-                                             TTS_PLAYBACK_TASK_STACK, NULL, 4, NULL, 0);
-    if (pok != pdPASS) {
-        ESP_LOGE(TAG, "播放任务创建失败");
-        s_playback_active = false;
+    if (playback_session_start() != ESP_OK) {
         s_reply_active = false;
         s_reply_result = ESP_ERR_NO_MEM;
         xSemaphoreGive(s_reply_done);
@@ -321,14 +321,11 @@ static void reply_stream_task(void *arg)
             break;
         }
     }
-    /* 收尾：标记流关闭，等播放任务播完缓冲内剩余音频 */
-    s_stream_closed = true;
-    if (xSemaphoreTake(s_playback_done, pdMS_TO_TICKS(TTS_PLAYBACK_WAIT_MS)) != pdTRUE) {
-        ESP_LOGW(TAG, "播放任务未在%dms内结束", TTS_PLAYBACK_WAIT_MS);
-        audio_pipeline_cancel();
-        s_reply_result = ESP_ERR_TIMEOUT;
+    /* 收尾：等播放任务播完缓冲内剩余音频；reply 合成错优先，否则记 playback 错 */
+    esp_err_t pb = playback_session_close();
+    if (pb != ESP_OK && s_reply_result == ESP_OK) {
+        s_reply_result = pb;
     }
-    audio_pipeline_clear_cancel();
     s_reply_active = false;
     xSemaphoreGive(s_reply_done);
     ESP_LOGI(TAG, "reply_tts_task 栈余 %uB",
