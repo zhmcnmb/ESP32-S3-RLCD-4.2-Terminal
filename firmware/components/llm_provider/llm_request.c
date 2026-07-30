@@ -36,7 +36,10 @@ static esp_err_t add_assistant_tool_calls(cJSON *message,
         cJSON_AddStringToObject(call, "type", "function");
         cJSON_AddStringToObject(function, "name", calls[i].name);
         cJSON_AddStringToObject(function, "arguments", arguments);
-        cJSON_AddItemToArray(array, call);
+        if (!cJSON_AddItemToArray(array, call)) {
+            cJSON_Delete(call);
+            return ESP_ERR_NO_MEM;
+        }
     }
     return ESP_OK;
 }

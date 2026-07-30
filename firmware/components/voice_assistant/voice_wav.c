@@ -110,7 +110,7 @@ esp_err_t va_wav_save_utterance(const int16_t *pcm, size_t n)
     build_wav_header((wav_header_t *)buf, pcm_bytes);
     memcpy(buf + WAV_HEADER_SIZE, pcm, pcm_bytes);
     esp_err_t err = storage_sd_atomic_replace(WAV_REL_PATH, buf, total);
-    free(buf);
+    heap_caps_free(buf);
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "WAV写入失败: %s", esp_err_to_name(err));
     }

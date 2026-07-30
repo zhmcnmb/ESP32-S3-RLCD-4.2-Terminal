@@ -43,6 +43,8 @@ static ap_state_t s_state;
 
 /* ─────────────────── I2S 初始化/释放 ─────────────────── */
 
+static void deinit_i2s_channels(void);
+
 /* 初始化 I2S 双工通道（TX + RX 共享一组引脚），失败返回非 ESP_OK */
 static esp_err_t init_i2s_channels(void)
 {
@@ -69,18 +71,13 @@ static esp_err_t init_i2s_channels(void)
     std_cfg.slot_cfg.slot_mask = I2S_STD_SLOT_LEFT;
 
     ret = i2s_channel_init_std_mode(s_state.i2s_tx, &std_cfg);
+    if (ret == ESP_OK) ret = i2s_channel_init_std_mode(s_state.i2s_rx, &std_cfg);
+    if (ret == ESP_OK) ret = i2s_channel_enable(s_state.i2s_tx);
+    if (ret == ESP_OK) ret = i2s_channel_enable(s_state.i2s_rx);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "i2s tx_init_std_mode 失败: %s", esp_err_to_name(ret));
-        return ret;
+        ESP_LOGE(TAG, "I2S通道初始化失败: %s", esp_err_to_name(ret));
+        deinit_i2s_channels(); /* 半初始化的通道立即回收，不占用I2S外设 */
     }
-    ret = i2s_channel_init_std_mode(s_state.i2s_rx, &std_cfg);
-    if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "i2s rx_init_std_mode 失败: %s", esp_err_to_name(ret));
-        return ret;
-    }
-    ret = i2s_channel_enable(s_state.i2s_tx);
-    if (ret != ESP_OK) return ret;
-    ret = i2s_channel_enable(s_state.i2s_rx);
     return ret;
 }
 
@@ -125,17 +122,19 @@ esp_err_t audio_pipeline_init(void)
     }
     gpio_set_level(BOARD_PA_EN_PIN, 0);
 
-    const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
-    if (gpio_if == NULL) {
-        ESP_LOGE(TAG, "audio_codec_new_gpio 失败");
-        return ESP_FAIL;
-    }
-
     ret = init_i2s_channels();
     if (ret != ESP_OK) return ret;
 
+    const audio_codec_gpio_if_t *gpio_if = audio_codec_new_gpio();
+    if (gpio_if == NULL) {
+        ESP_LOGE(TAG, "audio_codec_new_gpio 失败");
+        deinit_i2s_channels();
+        return ESP_FAIL;
+    }
+
     s_state.es8311_dev = ap_create_es8311(s_state.i2s_tx, gpio_if);
     if (s_state.es8311_dev == NULL) {
+        audio_codec_delete_gpio_if(gpio_if);
         deinit_i2s_channels();
         return ESP_FAIL;
     }

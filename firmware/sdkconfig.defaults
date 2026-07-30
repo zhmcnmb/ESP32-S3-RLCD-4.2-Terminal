@@ -75,3 +75,4 @@ CONFIG_LIBC_NEWLIB=y
 # 误报。CPU0(WiFi/lwIP协议栈+其余业务task)的IDLE0检查保留，用于捕获
 # 真实死锁
 CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+

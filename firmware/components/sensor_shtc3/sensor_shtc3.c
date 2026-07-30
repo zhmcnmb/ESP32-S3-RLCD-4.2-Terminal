@@ -43,12 +43,33 @@ esp_err_t shtc3_init(void)
     ESP_RETURN_ON_ERROR(i2c_master_bus_add_device(board_i2c_bus(), &cfg, &s_dev), TAG, "add dev");
 
     s_lock = xSemaphoreCreateMutex();
-    ESP_RETURN_ON_FALSE(s_lock, ESP_ERR_NO_MEM, TAG, "mutex创建失败");
+    if (!s_lock) {
+        i2c_master_bus_rm_device(s_dev);
+        s_dev = NULL;
+        ESP_LOGE(TAG, "mutex创建失败");
+        return ESP_ERR_NO_MEM;
+    }
 
     /* 唤醒后立即休眠，确认器件应答正常 */
-    ESP_RETURN_ON_ERROR(send_cmd(CMD_WAKEUP), TAG, "wakeup");
+    esp_err_t err = send_cmd(CMD_WAKEUP);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "wakeup");
+        i2c_master_bus_rm_device(s_dev);
+        s_dev = NULL;
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
+        return err;
+    }
     esp_rom_delay_us(WAKEUP_DELAY_US);
-    ESP_RETURN_ON_ERROR(send_cmd(CMD_SLEEP), TAG, "sleep");
+    err = send_cmd(CMD_SLEEP);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "sleep");
+        i2c_master_bus_rm_device(s_dev);
+        s_dev = NULL;
+        vSemaphoreDelete(s_lock);
+        s_lock = NULL;
+        return err;
+    }
 
     ESP_LOGI(TAG, "init OK");
     return ESP_OK;

@@ -49,6 +49,7 @@ static volatile bool s_reply_closed;
 static volatile bool s_reply_active;
 static volatile bool s_reply_has_content;
 static volatile esp_err_t s_reply_result;
+static volatile bool s_reply_task_started; /* lazy start: 首个 delta 才起 TTS 任务 */
 
 typedef struct {
     const volatile bool *cancel_flag;
@@ -257,7 +258,11 @@ static esp_err_t reply_speak(char *pending, size_t *pending_len, size_t sentence
         char saved = has_tail ? pending[sentence_len] : '\0';
         pending[sentence_len] = '\0';
         int status = 0;
-        err = va_tts_play(pending + start, s_reply_cancel_flag, &status);
+        pcm_ctx_t pctx = { .cancel_flag = s_reply_cancel_flag };
+        err = tts_client_synthesize(pending + start, on_pcm, &pctx, s_reply_cancel_flag, &status);
+        if (err != ESP_OK && err != ESP_ERR_NOT_FINISHED) {
+            ESP_LOGW(TAG, "TTS合成失败: %s status=%d", esp_err_to_name(err), status);
+        }
         if (has_tail) pending[sentence_len] = saved;
     }
     if (err != ESP_OK) return err;
@@ -272,6 +277,25 @@ static void reply_stream_task(void *arg)
     char incoming[REPLY_STREAM_READ_BYTES];
     char pending[REPLY_SENTENCE_MAX + 1];
     size_t pending_len = 0;
+
+    /* 启动持续播放任务：跨多句合成复用同一 playback，合成下一句时上一句仍在播，
+     * 消除"每句等播完再合成"的句间停顿(va_tts_play 的 per-call reset+wait) */
+    xStreamBufferReset(s_stream);
+    xSemaphoreTake(s_playback_done, 0);
+    s_stream_closed = false;
+    s_playback_result = ESP_OK;
+    s_playback_active = true;
+    BaseType_t pok = xTaskCreatePinnedToCore(playback_task, "tts_playback_task",
+                                             TTS_PLAYBACK_TASK_STACK, NULL, 4, NULL, 0);
+    if (pok != pdPASS) {
+        ESP_LOGE(TAG, "播放任务创建失败");
+        s_playback_active = false;
+        s_reply_active = false;
+        s_reply_result = ESP_ERR_NO_MEM;
+        xSemaphoreGive(s_reply_done);
+        vTaskDelete(NULL);
+        return;
+    }
 
     for (;;) {
         size_t got = xStreamBufferReceive(s_reply_stream, incoming, sizeof(incoming),
@@ -297,6 +321,14 @@ static void reply_stream_task(void *arg)
             break;
         }
     }
+    /* 收尾：标记流关闭，等播放任务播完缓冲内剩余音频 */
+    s_stream_closed = true;
+    if (xSemaphoreTake(s_playback_done, pdMS_TO_TICKS(TTS_PLAYBACK_WAIT_MS)) != pdTRUE) {
+        ESP_LOGW(TAG, "播放任务未在%dms内结束", TTS_PLAYBACK_WAIT_MS);
+        audio_pipeline_cancel();
+        s_reply_result = ESP_ERR_TIMEOUT;
+    }
+    audio_pipeline_clear_cancel();
     s_reply_active = false;
     xSemaphoreGive(s_reply_done);
     ESP_LOGI(TAG, "reply_tts_task 栈余 %uB",
@@ -328,13 +360,10 @@ esp_err_t va_reply_stream_start(const volatile bool *cancel_flag)
     s_reply_closed = false;
     s_reply_has_content = false;
     s_reply_result = ESP_OK;
+    s_reply_task_started = false;
     s_reply_active = true;
-    BaseType_t ok = xTaskCreatePinnedToCore(reply_stream_task, "reply_tts_task", 6144,
-                                            NULL, 4, NULL, 0);
-    if (ok != pdPASS) {
-        s_reply_active = false;
-        return ESP_ERR_NO_MEM;
-    }
+    /* reply_tts_task 延迟到首个 delta 才启动：LLM 工具回合无 delta 时空占 6KB
+     * 内部栈，挤压多轮 TLS 的 SSL context 内存(IN_CONTENT_LEN=16KB) */
     return ESP_OK;
 }
 
@@ -354,6 +383,15 @@ size_t va_tts_strip_markdown(const char *src, size_t len, char *out)
 esp_err_t va_reply_stream_push_delta(const char *delta)
 {
     if (!delta || !s_reply_active || s_reply_closed) return ESP_ERR_INVALID_STATE;
+    if (!s_reply_task_started) {
+        s_reply_task_started = true;
+        BaseType_t ok = xTaskCreatePinnedToCore(reply_stream_task, "reply_tts_task", 6144,
+                                                NULL, 4, NULL, 0);
+        if (ok != pdPASS) {
+            s_reply_result = ESP_ERR_NO_MEM;
+            return ESP_ERR_NO_MEM;
+        }
+    }
     size_t remaining = strlen(delta);
     const char *cursor = delta;
     char filtered[REPLY_FILTER_WINDOW];
@@ -389,6 +427,16 @@ esp_err_t va_reply_stream_finish(void)
     if (!s_reply_stream || !s_reply_done) return ESP_ERR_INVALID_STATE;
     if (!s_reply_active && !s_reply_closed) return s_reply_result;
     s_reply_closed = true;
-    xSemaphoreTake(s_reply_done, portMAX_DELAY);
+    /* 无 delta -> reply_tts_task 未启动，无 TTS 可收尾，直接复位 */
+    if (!s_reply_task_started) {
+        s_reply_active = false;
+        return s_reply_result;
+    }
+    /* 有界等待：每句合成/播放各自有超时，正常远小于60s。异常超时后
+     * s_reply_active仍由任务自身清零，未退出前start()拒绝复用，不会并发写流 */
+    if (xSemaphoreTake(s_reply_done, pdMS_TO_TICKS(60000)) != pdTRUE) {
+        ESP_LOGE(TAG, "reply_tts_task 未在60s内结束");
+        return ESP_ERR_TIMEOUT;
+    }
     return s_reply_result;
 }

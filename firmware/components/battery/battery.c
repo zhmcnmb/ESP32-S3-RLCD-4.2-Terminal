@@ -36,8 +36,13 @@ esp_err_t battery_init(void)
         .atten = ADC_ATTEN_DB_12,  /* 量程约0~3.1V，配合3倍分压覆盖电池全区间 */
         .bitwidth = ADC_BITWIDTH_DEFAULT,
     };
-    ESP_RETURN_ON_ERROR(adc_oneshot_config_channel(s_adc, BAT_ADC_CHANNEL, &chan_cfg),
-                        TAG, "adc channel");
+    esp_err_t err = adc_oneshot_config_channel(s_adc, BAT_ADC_CHANNEL, &chan_cfg);
+    if (err != ESP_OK) {
+        adc_oneshot_del_unit(s_adc);
+        s_adc = NULL;
+        ESP_LOGE(TAG, "adc channel");
+        return err;
+    }
 
     /* 校准曲线来自eFuse，没有校准数据时降级为裸读数(精度下降但仍可用) */
     adc_cali_curve_fitting_config_t cali_cfg = {

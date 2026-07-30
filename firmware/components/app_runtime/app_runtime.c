@@ -53,10 +53,31 @@ static void resource_log_cb(void *arg)
              (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM));
 }
 
-/* WiFi首次连接成功时触发(不论是否在15s等待窗口内)，保证延迟联网也能自动校时 */
+/* SNTP启动定时器回调：在esp_timer任务上下文执行，不在WiFi/IP事件回调中阻塞 */
+static void sntp_start_cb(void *arg)
+{
+    (void)arg;
+    log_if_failed(time_service_start_sntp(), "SNTP启动");
+}
+
+/* WiFi首次连接成功时触发(不论是否在15s等待窗口内)，保证延迟联网也能自动校时。
+ * 用一次性esp_timer把SNTP启动延迟到定时器任务上下文，避免在IP事件回调中阻塞
+ * (规范第7节：事件回调禁止网络访问和等待锁) */
 static void on_wifi_connected(void)
 {
-    log_if_failed(time_service_start_sntp(), "SNTP启动");
+    static esp_timer_handle_t sntp_timer = NULL;
+    if (!sntp_timer) {
+        const esp_timer_create_args_t args = {
+            .callback = sntp_start_cb,
+            .name = "sntp_start",
+        };
+        if (esp_timer_create(&args, &sntp_timer) != ESP_OK) {
+            ESP_LOGE(TAG, "创建SNTP定时器失败，直接启动");
+            log_if_failed(time_service_start_sntp(), "SNTP启动");
+            return;
+        }
+    }
+    esp_timer_start_once(sntp_timer, 0); /* 立即触发，但在esp_timer任务上下文执行 */
 }
 
 /* 网络与校时异步进行: 没网也要能显示时间(RTC)和温湿度，所以不阻塞UI启动 */

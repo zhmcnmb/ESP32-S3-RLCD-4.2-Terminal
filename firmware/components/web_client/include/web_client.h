@@ -42,6 +42,9 @@ esp_err_t web_client_search(const char *query, uint8_t max_results,
 esp_err_t web_client_extract(const char *url, size_t max_chars, char *out,
                              size_t out_size, size_t *out_len);
 
+/* 清空白名单，确保 extract 只在当前轮的 search 结果中选取 URL。 */
+void web_client_reset_sources(void);
 #ifdef __cplusplus
 }
 #endif
+

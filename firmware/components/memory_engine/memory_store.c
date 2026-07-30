@@ -15,28 +15,32 @@ static const char *TAG = "memory_store";
 
 typedef esp_err_t (*memory_line_cb_t)(const char *line, void *ctx);
 
-uint32_t memory_json_crc(const cJSON *json)
+esp_err_t memory_json_crc(const cJSON *json, uint32_t *out)
 {
+    if (!json || !out) {
+        return ESP_ERR_INVALID_ARG;
+    }
     char *text = cJSON_PrintUnformatted(json);
     if (!text) {
-        return 0;
+        return ESP_ERR_NO_MEM;
     }
-    uint32_t crc = esp_crc32_le(0, (const uint8_t *)text, (uint32_t)strlen(text));
+    *out = esp_crc32_le(0, (const uint8_t *)text, (uint32_t)strlen(text));
     free(text);
-    return crc;
+    return ESP_OK;
 }
 
 static esp_err_t append_json(const char *path, cJSON *json)
 {
-    uint32_t crc = memory_json_crc(json);
-    if (!crc || !cJSON_AddNumberToObject(json, "crc32", crc)) {
+    uint32_t crc = 0;
+    esp_err_t err = memory_json_crc(json, &crc);
+    if (err != ESP_OK || !cJSON_AddNumberToObject(json, "crc32", crc)) {
         cJSON_Delete(json);
-        return ESP_ERR_NO_MEM;
+        return err != ESP_OK ? err : ESP_ERR_NO_MEM;
     }
     char *line = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);
     if (!line) return ESP_ERR_NO_MEM;
-    esp_err_t err = memory_writer_enqueue_line(path, line);
+    err = memory_writer_enqueue_line(path, line);
     free(line);
     return err;
 }
@@ -49,7 +53,12 @@ static bool detach_valid_crc(cJSON *json)
         cJSON_Delete(stored);
         return false;
     }
-    bool valid = (uint32_t)stored->valuedouble == memory_json_crc(json);
+    uint32_t computed = 0;
+    if (memory_json_crc(json, &computed) != ESP_OK) {
+        cJSON_Delete(stored);
+        return false;
+    }
+    bool valid = (uint32_t)stored->valuedouble == computed;
     cJSON_Delete(stored);
     return valid;
 }

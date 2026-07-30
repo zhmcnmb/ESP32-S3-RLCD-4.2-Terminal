@@ -180,12 +180,16 @@ esp_err_t wakeword_init(wakeword_event_cb_t cb, void *ctx)
 
     esp_err_t ret = init_afe();
     if (ret != ESP_OK) {
+        if (g_wakeword_ctx.models) {
+            esp_srmodel_deinit(g_wakeword_ctx.models);
+        }
         memset(&g_wakeword_ctx, 0, sizeof(g_wakeword_ctx));
         return ret;
     }
     ret = init_multinet();
     if (ret != ESP_OK) {
         g_wakeword_ctx.afe_handle->destroy(g_wakeword_ctx.afe_data);
+        esp_srmodel_deinit(g_wakeword_ctx.models);
         memset(&g_wakeword_ctx, 0, sizeof(g_wakeword_ctx));
         return ret;
     }
@@ -212,8 +216,8 @@ esp_err_t wakeword_start(void)
         ESP_LOGE(TAG, "未初始化");
         return ESP_ERR_INVALID_STATE;
     }
-    if (g_wakeword_ctx.running) {
-        ESP_LOGW(TAG, "已在运行");
+    if (g_wakeword_ctx.running || g_wakeword_ctx.task) {
+        ESP_LOGW(TAG, "已在运行或旧任务未退出");
         return ESP_ERR_INVALID_STATE;
     }
     if (!audio_pipeline_is_ready()) {
@@ -222,10 +226,14 @@ esp_err_t wakeword_start(void)
     }
 
     g_wakeword_ctx.running = true;
+    /* 句柄字段直接作出参：内核在任务入就绪队列前写入，任务自清task后
+     * 不会再被此处的旧句柄覆盖；失败时内核不写出参，需显式清NULL */
     BaseType_t ret = xTaskCreatePinnedToCore(
-        wakeword_task, "wakeword", 8192, NULL, 5, &g_wakeword_ctx.task, 1);
+        wakeword_task, "wakeword", 8192, NULL, 5,
+        (TaskHandle_t *)&g_wakeword_ctx.task, 1);
     if (ret != pdPASS) {
         ESP_LOGE(TAG, "创建检测任务失败");
+        g_wakeword_ctx.task = NULL;
         g_wakeword_ctx.running = false;
         return ESP_FAIL;
     }
@@ -241,20 +249,16 @@ esp_err_t wakeword_stop(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* 通知任务退出并等待 */
+    /* 通知任务退出并等待其自清句柄：任务退出前把task置NULL，避免对已删除
+     * 任务的句柄调eTaskGetState(TCB已回收，未定义行为) */
     g_wakeword_ctx.running = false;
-    for (int i = 0; i < 20; i++) {
+    for (int i = 0; i < 20 && g_wakeword_ctx.task; i++) {
         vTaskDelay(pdMS_TO_TICKS(100));
-        if (eTaskGetState(g_wakeword_ctx.task) == eDeleted) {
-            break;
-        }
     }
-    if (eTaskGetState(g_wakeword_ctx.task) != eDeleted) {
+    if (g_wakeword_ctx.task) {
         ESP_LOGE(TAG, "检测任务未能在2秒内退出");
         return ESP_ERR_TIMEOUT;
     }
-
-    g_wakeword_ctx.task = NULL;
     ESP_LOGI(TAG, "检测任务已停止");
     return ESP_OK;
 }
@@ -265,7 +269,7 @@ esp_err_t wakeword_deinit(void)
         ESP_LOGW(TAG, "未初始化");
         return ESP_ERR_INVALID_STATE;
     }
-    if (g_wakeword_ctx.running) {
+    if (g_wakeword_ctx.running || g_wakeword_ctx.task) {
         ESP_LOGE(TAG, "请先停止检测任务");
         return ESP_ERR_INVALID_STATE;
     }
@@ -278,9 +282,12 @@ esp_err_t wakeword_deinit(void)
     if (g_wakeword_ctx.afe_handle && g_wakeword_ctx.afe_data) {
         g_wakeword_ctx.afe_handle->destroy(g_wakeword_ctx.afe_data);
     }
-    /* 释放语音段缓冲 */
+    /* 释放语音段缓冲与模型分区列表 */
     if (g_wakeword_ctx.utterance_buf) {
         heap_caps_free(g_wakeword_ctx.utterance_buf);
+    }
+    if (g_wakeword_ctx.models) {
+        esp_srmodel_deinit(g_wakeword_ctx.models);
     }
 
     memset(&g_wakeword_ctx, 0, sizeof(g_wakeword_ctx));

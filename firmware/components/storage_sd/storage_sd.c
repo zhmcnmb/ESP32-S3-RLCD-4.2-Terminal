@@ -116,21 +116,23 @@ bool storage_sd_is_mounted(void)
 esp_err_t storage_sd_get_info(storage_sd_info_t *out)
 {
     ESP_RETURN_ON_FALSE(out && s_card, ESP_ERR_INVALID_STATE, TAG, "未挂载");
-
+    xSemaphoreTake(s_lock, portMAX_DELAY);
     FATFS *fs = NULL;
     DWORD free_clusters = 0;
-    /* FATFS挂载点用驱动号形式 */
     FRESULT res = f_getfree("0:", &free_clusters, &fs);
-    ESP_RETURN_ON_FALSE(res == FR_OK, ESP_FAIL, TAG, "f_getfree失败: %d", res);
-
+    if (res != FR_OK) {
+        xSemaphoreGive(s_lock);
+        ESP_LOGE(TAG, "f_getfree失败: %d", res);
+        return ESP_FAIL;
+    }
     uint64_t sector = fs->ssize;
     uint64_t total = (uint64_t)(fs->n_fatent - 2) * fs->csize * sector;
     uint64_t freesp = (uint64_t)free_clusters * fs->csize * sector;
-
     out->total_bytes = total;
     out->used_bytes = total - freesp;
     strncpy(out->name, s_card->cid.name, sizeof(out->name) - 1);
     out->name[sizeof(out->name) - 1] = '\0';
+    xSemaphoreGive(s_lock);
     return ESP_OK;
 }
 

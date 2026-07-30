@@ -45,8 +45,12 @@ static bool parse_time(const cJSON *item, time_t *out)
 static bool valid_crc(cJSON *json)
 {
     cJSON *stored = cJSON_DetachItemFromObjectCaseSensitive(json, "crc32");
-    uint32_t crc = 0;
-    bool valid = parse_u32(stored, &crc) && crc == memory_json_crc(json);
+    uint32_t stored_crc = 0;
+    uint32_t computed = 0;
+    bool valid = false;
+    if (parse_u32(stored, &stored_crc) && memory_json_crc(json, &computed) == ESP_OK) {
+        valid = (stored_crc == computed);
+    }
     cJSON_Delete(stored);
     return valid;
 }
@@ -195,10 +199,11 @@ esp_err_t memory_profile_write(memory_state_t *state)
             return err;
         }
     }
-    uint32_t crc = memory_json_crc(json);
-    if (!crc || !cJSON_AddNumberToObject(json, "crc32", crc)) {
+    uint32_t crc = 0;
+    esp_err_t crc_err = memory_json_crc(json, &crc);
+    if (crc_err != ESP_OK || !cJSON_AddNumberToObject(json, "crc32", crc)) {
         cJSON_Delete(json);
-        return ESP_ERR_NO_MEM;
+        return crc_err != ESP_OK ? crc_err : ESP_ERR_NO_MEM;
     }
     char *text = cJSON_PrintUnformatted(json);
     cJSON_Delete(json);

@@ -17,8 +17,6 @@ const ui_page_t *page_jarvis_get(void);
 /* 时钟页: 时间、日期星期、室内温湿度 */
 const ui_page_t *page_home_get(void);
 
-/* 诊断页: 旧式直读硬件自检，不得作为新页面模板，也不注册进翻页 */
-const ui_page_t *page_diag_get(void);
 
 /* 环境趋势页: 温湿度历史折线图，数据来自 sys_state */
 const ui_page_t *page_env_monitor_get(void);

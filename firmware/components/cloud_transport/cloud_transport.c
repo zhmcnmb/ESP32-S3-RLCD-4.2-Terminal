@@ -23,6 +23,7 @@ typedef struct {
     int len;
     int cap;
     bool gzip;
+    bool truncated; /* 响应超RAW_BUF_SIZE时置位 */
 } fetch_ctx_t;
 
 static esp_err_t http_event_handler(esp_http_client_event_t *evt)
@@ -38,11 +39,15 @@ static esp_err_t http_event_handler(esp_http_client_event_t *evt)
     case HTTP_EVENT_ON_DATA: {
         int remain = ctx->cap - ctx->len;
         if (remain <= 0) {
+            ctx->truncated = true;
             break;
         }
         int n = evt->data_len < remain ? evt->data_len : remain;
         memcpy(ctx->buf + ctx->len, evt->data, n);
         ctx->len += n;
+        if (n < evt->data_len) {
+            ctx->truncated = true;
+        }
         break;
     }
     default:
@@ -93,8 +98,17 @@ static esp_err_t perform_get(const char *url, const char *header_name, const cha
     };
     esp_http_client_handle_t client = esp_http_client_init(&cfg);
     if (!client) return ESP_ERR_NO_MEM;
-    if (header_name && header_value) esp_http_client_set_header(client, header_name, header_value);
+    if (header_name && header_value) {
+        esp_err_t set_err = esp_http_client_set_header(client, header_name, header_value);
+        if (set_err != ESP_OK) {
+            esp_http_client_cleanup(client);
+            return set_err;
+        }
+    }
     esp_err_t err = esp_http_client_perform(client);
+    if (err == ESP_OK && ctx->truncated) {
+        err = ESP_ERR_INVALID_SIZE;
+    }
     int status = esp_http_client_get_status_code(client);
     esp_http_client_cleanup(client);
     if (err != ESP_OK) {

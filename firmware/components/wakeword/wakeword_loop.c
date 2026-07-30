@@ -89,23 +89,30 @@ static void process_multinet(const afe_fetch_result_t *res)
     g_wakeword_ctx.vad_was_active = false;
 }
 
-static void process_vad(const afe_fetch_result_t *res, const int16_t *feed, size_t feed_count)
+static void process_vad(const afe_fetch_result_t *res)
 {
     if (g_wakeword_ctx.state != STATE_LISTENING) {
         return;
     }
     bool vad_active = res->vad_state == VAD_SPEECH;
     if (vad_active && !g_wakeword_ctx.vad_was_active) {
+        if (ensure_utterance_buf() != ESP_OK) {
+            /* 分配失败：不发SPEECH_START也不置vad_was_active，下一帧重试，
+             * 避免带着上一轮残留缓冲提交陈旧录音 */
+            return;
+        }
+        g_wakeword_ctx.utterance_count = 0;
         ESP_LOGI(TAG, "语音开始");
-        if (ensure_utterance_buf() == ESP_OK) {
-            g_wakeword_ctx.utterance_count = 0;
+        /* VAD判定滞后，起始音节缓存在vad_cache里，先补进来避免句首截断 */
+        if (res->vad_cache_size > 0) {
+            append_utterance(res->vad_cache, (size_t)res->vad_cache_size / sizeof(int16_t));
         }
         if (g_wakeword_ctx.cb) {
             g_wakeword_ctx.cb(WAKEWORD_EVENT_SPEECH_START, g_wakeword_ctx.ctx);
         }
     }
-    if (vad_active && g_wakeword_ctx.utterance_buf
-        && append_utterance(feed, feed_count)) {
+    /* 采集AFE处理后的输出(res->data)而非原始feed帧：与VAD判定同帧对齐且已降噪 */
+    if (vad_active && append_utterance(res->data, (size_t)res->data_size / sizeof(int16_t))) {
         finish_utterance(true);
         return;
     }
@@ -125,6 +132,8 @@ void wakeword_task(void *arg)
     int16_t *feed = heap_caps_malloc(frame_samples * sizeof(*feed), MALLOC_CAP_SPIRAM);
     if (!feed) {
         ESP_LOGE(TAG, "分配feed缓冲失败");
+        g_wakeword_ctx.running = false;
+        g_wakeword_ctx.task = NULL; /* stop()以句柄归零为退出依据 */
         vTaskDelete(NULL);
         return;
     }
@@ -149,9 +158,10 @@ void wakeword_task(void *arg)
             continue;
         }
         process_multinet(res);
-        process_vad(res, feed, (size_t)feed_chunksize);
+        process_vad(res);
     }
     heap_caps_free(feed);
     ESP_LOGI(TAG, "检测任务退出");
+    g_wakeword_ctx.task = NULL; /* stop()以句柄归零为退出依据，见wakeword_stop */
     vTaskDelete(NULL);
 }

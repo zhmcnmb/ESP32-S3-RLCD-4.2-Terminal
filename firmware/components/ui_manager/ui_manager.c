@@ -112,7 +112,13 @@ esp_err_t ui_manager_init(void)
     s_input_queue = xQueueCreate(INPUT_QUEUE_LEN, sizeof(input_event_t));
     ESP_RETURN_ON_FALSE(s_input_queue, ESP_ERR_NO_MEM, TAG, "input queue");
 
-    return input_manager_set_handler(on_input_event);
+    esp_err_t err = input_manager_set_handler(on_input_event);
+    if (err != ESP_OK) {
+        vQueueDelete(s_input_queue);
+        s_input_queue = NULL;
+        return err;
+    }
+    return ESP_OK;
 }
 
 esp_err_t ui_manager_register_page(const ui_page_t *page)
@@ -129,9 +135,9 @@ esp_err_t ui_manager_start(void)
 {
     ESP_RETURN_ON_FALSE(s_page_count > 0, ESP_ERR_INVALID_STATE, TAG, "no pages");
 
-    enter_page(0);
     BaseType_t ok = xTaskCreate(ui_task, "ui_task", 4096, NULL, 5, NULL);
     ESP_RETURN_ON_FALSE(ok == pdPASS, ESP_ERR_NO_MEM, TAG, "task create failed");
+    enter_page(0);
     return ESP_OK;
 }
 

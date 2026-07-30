@@ -6,8 +6,8 @@
 #include <string.h>
 
 #include "esp_heap_caps.h"
-
 #define AGENT_TEXT_INITIAL_CAP 512
+#define AGENT_TEXT_MAX (16 * 1024)
 
 void agent_text_init(agent_text_t *text)
 {
@@ -35,6 +35,10 @@ static esp_err_t ensure_capacity(agent_text_t *text, size_t need)
         return ESP_ERR_NO_MEM;
     }
     size_t required = need + 1;
+    if (required > AGENT_TEXT_MAX) {
+        text->oom = true;
+        return ESP_ERR_NO_MEM;
+    }
     if (text->cap >= required) {
         return ESP_OK;
     }
