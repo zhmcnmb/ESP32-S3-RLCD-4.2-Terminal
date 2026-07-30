@@ -6,6 +6,8 @@
  * 消除句间(如TTS一次回答的多个合成块)重复TLS握手开销。服务端若不保持连接(主动断开
  * keep-alive)，调用方靠自己的"网络层失败→关闭重连重试一次"逻辑兜底，本文件不感知
  * 该策略、只管连接生命周期。
+ * 定位：有意薄 adapter--in_use 并发守卫 + 失败 close 是真实逻辑，
+ * deletion test 后复杂度回到调用方(各自管句柄生命周期)，非 pass-through。
  */
 #include "cloud_transport.h"
 #include "cloud_transport_internal.h"
