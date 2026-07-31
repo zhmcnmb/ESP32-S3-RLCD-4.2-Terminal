@@ -60,25 +60,16 @@ static void accumulate_tool_call(llm_sse_t *ctx, cJSON *tc_item)
     }
 }
 
-/* finish_reason -> on_tool_calls 回调触发 */
+/* finish_reason -> on_tool_calls 回调触发。模型流式工具回合 index 从 0
+ * 连续递增(OpenAI 兼容规范)，无需空洞压缩，count 即实际槽位数 */
 static void check_finish_and_flush(llm_sse_t *ctx, cJSON *choice)
 {
     cJSON *reason = cJSON_GetObjectItem(choice, "finish_reason");
     if (!cJSON_IsString(reason) || reason->valuestring[0] == '\0') {
         return;
     }
-    int compact = 0;
-    for (int i = 0; i < ctx->tool_call_count; i++) {
-        if (ctx->tool_calls[i].name[0] != '\0') {
-            if (compact != i) {
-                ctx->tool_calls[compact] = ctx->tool_calls[i];
-            }
-            compact++;
-        }
-    }
-    ctx->tool_call_count = compact;
-    if (compact > 0 && ctx->sink && ctx->sink->on_tool_calls) {
-        ctx->sink->on_tool_calls(ctx->tool_calls, compact, ctx->sink->ctx);
+    if (ctx->tool_call_count > 0 && ctx->sink && ctx->sink->on_tool_calls) {
+        ctx->sink->on_tool_calls(ctx->tool_calls, ctx->tool_call_count, ctx->sink->ctx);
     }
 }
 
@@ -92,9 +83,7 @@ static esp_err_t process_sse_line(llm_sse_t *ctx, const char *line)
         return ESP_OK;
     }
     const char *payload = line + 6;
-    if (strcmp(payload, "[DONE]") == 0) {
-        return ESP_OK;
-    }
+    /* [DONE] 哨兵非合法JSON，与坏数据一样在 Parse 失败处静默跳过 */
     cJSON *root = cJSON_Parse(payload);
     if (!root) {
         return ESP_OK;
@@ -114,8 +103,6 @@ static esp_err_t process_sse_line(llm_sse_t *ctx, const char *line)
                 accumulate_tool_call(ctx, cJSON_GetArrayItem(tc_arr, i));
             }
         }
-    }
-    if (delta) {
         cJSON *content = cJSON_GetObjectItem(delta, "content");
         /* 已出现 tool_call 后的 content 属于工具回合，不作为回复投递 */
         if (cJSON_IsString(content) && content->valuestring[0] != '\0'
