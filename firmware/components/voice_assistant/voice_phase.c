@@ -1,6 +1,6 @@
 /* voice_phase.c - 语音相位状态机：转换合法性校验 + sys_state 推送。
  * 从 voice_assistant 抽出，使状态转换规则集中可独立审查/纯测。
- * 状态机：只允许语义合理转换；P6.0预留EXECUTING/CONFIRM，非法转换拒绝并记录。 */
+ * 状态机：只允许语义合理转换；非法转换拒绝并记录。 */
 #include "voice_phase.h"
 
 #include "esp_log.h"
@@ -30,8 +30,6 @@ static bool phase_transition_valid(sys_voice_phase_t from, sys_voice_phase_t to)
             || to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
     case SYS_VOICE_SPEAKING:
         return to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
-    case SYS_VOICE_CONFIRM:
-        return to == SYS_VOICE_EXECUTING || to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
     case SYS_VOICE_ERROR:
         return to == SYS_VOICE_IDLE;
     default:
