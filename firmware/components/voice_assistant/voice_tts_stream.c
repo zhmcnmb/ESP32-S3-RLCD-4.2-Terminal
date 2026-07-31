@@ -438,8 +438,8 @@ esp_err_t va_reply_stream_finish(void)
     }
     /* 有界等待：每句合成/播放各自有超时，正常远小于60s。异常超时后
      * s_reply_active仍由任务自身清零，未退出前start()拒绝复用，不会并发写流 */
-    if (xSemaphoreTake(s_reply_done, pdMS_TO_TICKS(60000)) != pdTRUE) {
-        ESP_LOGE(TAG, "reply_tts_task 未在60s内结束，强制复位");
+    if (xSemaphoreTake(s_reply_done, pdMS_TO_TICKS(300000)) != pdTRUE) {
+        ESP_LOGE(TAG, "reply_tts_task 未在300s内结束，强制复位");
         /* cancel 唤醒卡住的 playback_task，复位状态让后续 turn 的 start 能用，
          * 旧任务泄漏但不阻塞新一轮语音(否则 s_reply_active 永真致连续回答失败) */
         audio_pipeline_cancel();
