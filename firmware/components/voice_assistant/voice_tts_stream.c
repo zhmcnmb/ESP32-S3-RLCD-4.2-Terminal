@@ -13,6 +13,7 @@
 #include "freertos/stream_buffer.h"
 #include "freertos/task.h"
 #include "freertos/idf_additions.h"
+#include "tts_text.h"
 #include "tts_client.h"
 
 static const char *TAG = "voice_tts";
@@ -27,7 +28,6 @@ static const char *TAG = "voice_tts";
 #define TTS_STREAM_TRIGGER_BYTES 512
 #define REPLY_STREAM_BUF_BYTES    (16 * 1024)
 #define REPLY_STREAM_READ_BYTES   256
-#define REPLY_SENTENCE_MAX        1024
 
 #define TTS_FIXED_GAIN_X10       50 /* 5.0x 固定增益，逐样本限幅防溢出 */
 #define TTS_PLAYBACK_TASK_STACK  4096
@@ -201,7 +201,7 @@ esp_err_t va_tts_play_clean(const char *text, const volatile bool *cancel_flag, 
     char *filtered = heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM);
     /* 过滤缓存不足时宁可失败，也不能退回原文把Markdown记号朗读出来。 */
     if (!filtered) return ESP_ERR_NO_MEM;
-    size_t out_len = va_tts_strip_markdown(text, len, filtered);
+    size_t out_len = tts_strip_markdown(text, len, filtered);
     filtered[out_len] = '\0';
     if (out_len == 0) {
         if (out_status) *out_status = 0;
@@ -213,46 +213,6 @@ esp_err_t va_tts_play_clean(const char *text, const volatile bool *cancel_flag, 
     return err;
 }
 
-static size_t reply_sentence_len(const char *text, size_t len)
-{
-    for (size_t i = 0; i < len; i++) {
-        if (text[i] == '\n' || text[i] == '.' || text[i] == '!' || text[i] == '?') return i + 1;
-        if (i + 2 < len && (memcmp(text + i, "。", 3) == 0
-            || memcmp(text + i, "！", 3) == 0 || memcmp(text + i, "？", 3) == 0)) {
-            return i + 3;
-        }
-    }
-    return 0;
-}
-
-/* 把缓冲内所有完整句子并成一个合成块:首块仍最小化开口延迟,
- * 后续块因模型产出快于播放自然变长,减少逐句HTTPS往返造成的停顿。 */
-static size_t reply_sentences_len(const char *text, size_t len)
-{
-    size_t total = 0;
-    for (;;) {
-        size_t n = reply_sentence_len(text + total, len - total);
-        if (n == 0) return total;
-        total += n;
-    }
-}
-
-/* 流缓冲边界可能落进UTF-8字符内，只交付完整前缀，不能读取text[len]外的字节。 */
-static size_t reply_safe_chunk_len(const char *text, size_t len)
-{
-    size_t chunk_len = len < REPLY_SENTENCE_MAX ? len : REPLY_SENTENCE_MAX;
-    if (chunk_len == 0) return 0;
-    size_t start = chunk_len;
-    while (start > 0 && (((unsigned char)text[start - 1] & 0xc0) == 0x80)) start--;
-    if (start == chunk_len) {
-        unsigned char lead = (unsigned char)text[chunk_len - 1];
-        return lead < 0x80 || lead >= 0xf8 ? chunk_len : chunk_len - 1;
-    }
-    if (start == 0) return chunk_len; /* 上游非法连续字节原样交给服务端处理。 */
-    unsigned char lead = (unsigned char)text[start - 1];
-    size_t expected = lead < 0xe0 ? 1 : lead < 0xf0 ? 2 : lead < 0xf8 ? 3 : 0;
-    return expected == chunk_len - start ? chunk_len : start - 1;
-}
 
 static esp_err_t reply_speak(char *pending, size_t *pending_len, size_t sentence_len)
 {
@@ -286,7 +246,7 @@ static void reply_stream_task(void *arg)
 {
     (void)arg;
     char incoming[REPLY_STREAM_READ_BYTES];
-    char pending[REPLY_SENTENCE_MAX + 1];
+    char pending[TTS_SENTENCE_MAX + 1];
     size_t pending_len = 0;
 
     /* 启动持续播放任务：跨多句合成复用同一 playback，合成下一句时上一句仍在播，
@@ -303,14 +263,14 @@ static void reply_stream_task(void *arg)
         size_t got = xStreamBufferReceive(s_reply_stream, incoming, sizeof(incoming),
                                           pdMS_TO_TICKS(100));
         if (got > 0) {
-            if (pending_len + got > REPLY_SENTENCE_MAX) {
+            if (pending_len + got > TTS_SENTENCE_MAX) {
                 s_reply_result = reply_speak(pending, &pending_len,
-                                              reply_safe_chunk_len(pending, pending_len));
+                                              tts_safe_chunk_len(pending, pending_len));
                 if (s_reply_result != ESP_OK) break;
             }
             memcpy(pending + pending_len, incoming, got);
             pending_len += got;
-            size_t chunk_len = reply_sentences_len(pending, pending_len);
+            size_t chunk_len = tts_sentences_len(pending, pending_len);
             if (chunk_len > 0) {
                 s_reply_result = reply_speak(pending, &pending_len, chunk_len);
             }
@@ -366,21 +326,6 @@ esp_err_t va_reply_stream_start(const volatile bool *cancel_flag)
     return ESP_OK;
 }
 
-size_t va_tts_strip_markdown(const char *src, size_t len, char *out)
-{
-    size_t n = 0;
-    for (size_t i = 0; i < len; i++) {
-        char c = src[i];
-        if (c == '*' || c == '`' || c == '#' || c == '_') continue;
-        /* Markdown 列表标记 "- " 不朗读(减号无空格后如 3-5 不受影响) */
-        if (c == '-' && i + 1 < len && src[i + 1] == ' ') {
-            i++;
-            continue;
-        }
-        out[n++] = c;
-    }
-    return n;
-}
 
 #define REPLY_FILTER_WINDOW 128
 
@@ -403,7 +348,7 @@ esp_err_t va_reply_stream_push_delta(const char *delta)
         if (s_reply_cancel_flag && *s_reply_cancel_flag) return ESP_ERR_NOT_FINISHED;
         if (s_reply_result != ESP_OK) return s_reply_result;
         size_t window = remaining > REPLY_FILTER_WINDOW ? REPLY_FILTER_WINDOW : remaining;
-        size_t filtered_len = va_tts_strip_markdown(cursor, window, filtered);
+        size_t filtered_len = tts_strip_markdown(cursor, window, filtered);
         size_t sent_total = 0;
         while (sent_total < filtered_len) {
             size_t sent = xStreamBufferSend(s_reply_stream, filtered + sent_total,

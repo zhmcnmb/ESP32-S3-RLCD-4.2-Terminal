@@ -39,10 +39,6 @@ esp_err_t va_tts_play(const char *text, const volatile bool *cancel_flag, int *o
  * 绝不退回原文，以免把Markdown记号朗读出来。 */
 esp_err_t va_tts_play_clean(const char *text, const volatile bool *cancel_flag, int *out_status);
 
-/* 清洗Markdown强调/标题/代码记号(* ` # _)，避免TTS朗读出符号杂音；多字节UTF-8
- * 字节不受影响(均<0x80，不与UTF-8连续字节混淆)，'-'保留以免破坏日期/负数等正常文本。
- * out 至少 len 字节，返回写入 out 的字节数(<=len，不含结尾'\0'，调用方自行补)。 */
-size_t va_tts_strip_markdown(const char *src, size_t len, char *out);
 
 /* 将模型增量文本按句排队给 TTS；后台任务负责边接收边播放，调用方只传递片段。 */
 esp_err_t va_reply_stream_start(const volatile bool *cancel_flag);
