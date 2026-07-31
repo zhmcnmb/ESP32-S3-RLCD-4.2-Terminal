@@ -13,6 +13,7 @@
 #include "freertos/task.h"
 #include "sys_state.h"
 #include "wakeword.h"
+#include "voice_phase.h"
 static const char *TAG = "voice_assistant";
 #define MAX_UTTERANCE_SAMPLES (15 * 16000)
 /* ASR 文本进入 LLM 前只短暂驻留任务栈，512B 覆盖客户端单轮转写契约。 */
@@ -25,49 +26,7 @@ static volatile bool s_busy;    /* 一轮 ASR/LLM/TTS 进行中，忽略新唤�
 static volatile bool s_in_turn; /* 从 WAKE 到 finish_turn 期间为 true，防止重复唤醒 */
 static int16_t *s_utt_buf;
 static esp_timer_handle_t s_cancel_timer;
-static sys_voice_phase_t s_current_phase = SYS_VOICE_IDLE;
 static int64_t s_listening_deadline_us;
-/* 状态机：只允许语义合理转换；P6.0预留EXECUTING/CONFIRM，非法转换拒绝并记录。 */
-static bool phase_transition_valid(sys_voice_phase_t from, sys_voice_phase_t to)
-{
-    if (from == to) {
-        return true;
-    }
-    switch (from) {
-    case SYS_VOICE_IDLE:
-        /* scheduler 可在没有用户轮次时直接播报提醒。 */
-        return to == SYS_VOICE_LISTENING || to == SYS_VOICE_SPEAKING;
-    case SYS_VOICE_LISTENING:
-        return to == SYS_VOICE_TRANSCRIBING || to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
-    case SYS_VOICE_TRANSCRIBING:
-        return to == SYS_VOICE_THINKING || to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
-    case SYS_VOICE_THINKING:
-        return to == SYS_VOICE_SPEAKING || to == SYS_VOICE_EXECUTING
-            || to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
-    case SYS_VOICE_EXECUTING:
-        return to == SYS_VOICE_SPEAKING || to == SYS_VOICE_THINKING
-            || to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
-    case SYS_VOICE_SPEAKING:
-        return to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
-    case SYS_VOICE_CONFIRM:
-        return to == SYS_VOICE_EXECUTING || to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
-    case SYS_VOICE_ERROR:
-        return to == SYS_VOICE_IDLE;
-    default:
-        return false;
-    }
-}
-/* 复合状态更新：校验转换合法性 + 推进相位 + (仅ERROR)带短原因文案，
- * page_jarvis 据此区分"网络故障"/"未听清"等，而不是所有异常显示同一个词 */
-static void voice_alert(sys_voice_phase_t phase, const char *reason)
-{
-    if (!phase_transition_valid(s_current_phase, phase)) {
-        ESP_LOGW(TAG, "非法状态转换 %d->%d，已拒绝", s_current_phase, phase);
-        return;
-    }
-    s_current_phase = phase;
-    sys_state_apply_voice(phase, s_turn_id, reason);
-}
 
 static void clear_cancel_flags(void)
 {
@@ -170,6 +129,7 @@ static void reminder_started(void)
     s_in_turn = true;
     s_busy = true;
     s_turn_id++;
+    voice_phase_set_turn(s_turn_id);
     voice_alert(SYS_VOICE_SPEAKING, NULL);
 }
 
@@ -307,6 +267,7 @@ static void dispatch_wake_event(wakeword_event_t evt)
         }
         s_in_turn = true;
         s_turn_id++;
+        voice_phase_set_turn(s_turn_id);
         clear_cancel_flags();
         voice_alert(SYS_VOICE_LISTENING, NULL);
         ESP_LOGI(TAG, "turn %" PRIu32 " 唤醒", s_turn_id);
