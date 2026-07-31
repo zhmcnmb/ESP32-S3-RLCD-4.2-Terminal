@@ -66,7 +66,10 @@ esp_err_t cloud_transport_conn_post_stream(cloud_stream_conn_t *conn,
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "请求失败(%s)，关闭连接让下次open从干净状态开始",
                  esp_err_to_name(err));
-        esp_http_client_close(conn->client);
+        esp_err_t cerr = esp_http_client_close(conn->client);
+        if (cerr != ESP_OK) {
+            ESP_LOGW(TAG, "失败后关闭连接异常: %s", esp_err_to_name(cerr));
+        }
     }
     return err;
 }
