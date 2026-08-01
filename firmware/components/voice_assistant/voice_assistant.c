@@ -31,6 +31,9 @@ static int64_t s_listening_deadline_us;
 static void clear_cancel_flags(void)
 {
     s_cancel = false;
+    /* wakeword 录音依赖 audio_pipeline_read：上轮取消(cancel)残留不清除会让
+     * 唤醒词 read 恒返回0。此处清除不影响已退出的旧播放任务(被 cancel 中断的
+     * write 必返回 NOT_FINISHED 后 break)，保留勿删 */
     audio_pipeline_clear_cancel();
     (void)sys_state_consume_voice_cancel();
 }
