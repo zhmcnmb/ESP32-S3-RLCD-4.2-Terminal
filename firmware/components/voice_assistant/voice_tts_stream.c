@@ -35,11 +35,13 @@ static volatile bool s_reply_active;
 static volatile bool s_reply_has_content;
 static volatile esp_err_t s_reply_result;
 static volatile bool s_reply_task_started; /* lazy start: 首个 delta 才起 TTS 任务 */
-static uint32_t s_reply_gen; /* 每轮 start 递增；任务持快照，收尾时核对防旧任务污染新轮 */
+static volatile uint32_t s_reply_gen; /* 每轮 start 递增；任务持快照，收尾时核对防旧任务污染新轮 */
+static volatile int32_t s_reply_tasks; /* 存活 reply 任务数：start 等待归零防跨代 receive 丢字 */
 
 
 
-static esp_err_t reply_speak(char *pending, size_t *pending_len, size_t sentence_len)
+static esp_err_t reply_speak(char *pending, size_t *pending_len, size_t sentence_len,
+                              uint32_t play_gen)
 {
     size_t consumed_len = sentence_len;
     esp_err_t err = ESP_OK;
@@ -54,7 +56,9 @@ static esp_err_t reply_speak(char *pending, size_t *pending_len, size_t sentence
         char saved = has_tail ? pending[sentence_len] : '\0';
         pending[sentence_len] = '\0';
         int status = 0;
-        tts_play_ctx_t pctx = { .cancel_flag = s_reply_cancel_flag, .gen = tts_play_session_gen() };
+        /* gen 用本任务启动会话时的播放代次快照(调用方传入)，不能实时读：
+         * 换代后实时值是新代次，synth_cb 的 pc->gen 校验会失效 */
+        tts_play_ctx_t pctx = { .cancel_flag = s_reply_cancel_flag, .gen = play_gen };
         err = tts_client_synthesize(pending + start, tts_play_synth_cb, &pctx, s_reply_cancel_flag, &status);
         if (err != ESP_OK && err != ESP_ERR_NOT_FINISHED) {
             ESP_LOGW(TAG, "TTS合成失败: %s status=%d", esp_err_to_name(err), status);
@@ -65,6 +69,17 @@ static esp_err_t reply_speak(char *pending, size_t *pending_len, size_t sentence
     memmove(pending, pending + consumed_len, *pending_len - consumed_len);
     *pending_len -= consumed_len;
     return ESP_OK;
+}
+
+/* 合成一句并写共享结果；合成中换代则丢弃结果(不污染新轮)。
+ * 返回 false 表示应退出循环(换代或合成失败) */
+static bool reply_speak_guarded(char *pending, size_t *pending_len, size_t sentence_len,
+                                uint32_t my_gen, uint32_t play_gen)
+{
+    esp_err_t r = reply_speak(pending, pending_len, sentence_len, play_gen);
+    if (s_reply_gen != my_gen) return false;
+    s_reply_result = r;
+    return s_reply_result == ESP_OK;
 }
 
 static void reply_stream_task(void *arg)
@@ -81,53 +96,47 @@ static void reply_stream_task(void *arg)
         s_reply_active = false;
         s_reply_result = ESP_ERR_NO_MEM;
         xSemaphoreGive(s_reply_done);
+        s_reply_tasks--;
         vTaskDeleteWithCaps(NULL);
         return;
     }
+    /* 播放代次快照：合成回调 gen 校验用本任务启动的代，实时读会拿到新代 */
+    uint32_t play_gen = tts_play_session_gen();
 
     for (;;) {
-        /* 已被新轮取代(300s超时复位后新轮start递增gen并reset流)：
-         * 立即退出，否则会读到新轮数据重复合成、双写播放流 */
         if (s_reply_gen != my_gen) break;
         size_t got = xStreamBufferReceive(s_reply_stream, incoming, sizeof(incoming),
                                           pdMS_TO_TICKS(100));
+        /* 阻塞期间换代不消费(流缓冲单读者，抢走即丢字) */
+        if (s_reply_gen != my_gen) break;
         if (got > 0) {
-            if (pending_len + got > TTS_SENTENCE_MAX) {
-                esp_err_t r = reply_speak(pending, &pending_len,
-                                          tts_safe_chunk_len(pending, pending_len));
-                if (s_reply_gen != my_gen) break; /* 合成中换代：丢弃结果不污染新轮 */
-                s_reply_result = r;
-                if (s_reply_result != ESP_OK) break;
+            if (pending_len + got > TTS_SENTENCE_MAX
+                && !reply_speak_guarded(pending, &pending_len,
+                                        tts_safe_chunk_len(pending, pending_len), my_gen, play_gen)) {
+                break;
             }
             memcpy(pending + pending_len, incoming, got);
             pending_len += got;
             size_t chunk_len = tts_sentences_len(pending, pending_len);
-            if (chunk_len > 0) {
-                esp_err_t r = reply_speak(pending, &pending_len, chunk_len);
-                if (s_reply_gen != my_gen) break;
-                s_reply_result = r;
+            if (chunk_len > 0 && !reply_speak_guarded(pending, &pending_len, chunk_len, my_gen, play_gen)) {
+                break;
             }
-            if (s_reply_result != ESP_OK) break;
         }
         if (s_reply_closed && xStreamBufferIsEmpty(s_reply_stream)) {
             if (pending_len > 0) {
-                esp_err_t r = reply_speak(pending, &pending_len, pending_len);
-                if (s_reply_gen != my_gen) break;
-                s_reply_result = r;
+                reply_speak_guarded(pending, &pending_len, pending_len, my_gen, play_gen);
             }
             break;
         }
     }
-    /* 收尾：仅当前代才等播放任务收尾并写共享状态；被强制复位后的
-     * 旧任务直接退出，避免 give 信号/写结果污染新轮 */
+    /* 收尾：仅当前代才收尾播放并写共享状态；旧任务直接退出 */
     if (s_reply_gen == my_gen) {
         esp_err_t pb = tts_play_session_close();
-        if (pb != ESP_OK && s_reply_result == ESP_OK) {
-            s_reply_result = pb;
-        }
+        if (pb != ESP_OK && s_reply_result == ESP_OK) s_reply_result = pb;
         s_reply_active = false;
         xSemaphoreGive(s_reply_done);
     }
+    s_reply_tasks--; /* start 以此等待旧任务退出 */
     ESP_LOGI(TAG, "reply_tts_task 栈余 %uB",
              (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     vTaskDeleteWithCaps(NULL);
@@ -151,14 +160,31 @@ esp_err_t va_reply_stream_start(const volatile bool *cancel_flag)
         if (!s_reply_done) return ESP_ERR_NO_MEM;
     }
     if (s_reply_active) return ESP_ERR_INVALID_STATE;
-    xStreamBufferReset(s_reply_stream);
+    /* 旧 reply 任务未退出(300s超时残留)：有界等待退出，防跨代 receive
+     * 拿走新轮字节(流缓冲单读者，取走即丢字) */
+    for (int i = 0; i < 20 && s_reply_tasks > 0; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (s_reply_tasks > 0) return ESP_ERR_INVALID_STATE;
+    ++s_reply_gen; /* 先换代：任何状态变更前旧任务即失效 */
+    /* reset 在旧任务阻塞于 receive 时返回 pdFAIL(ESP-IDF stream_buffer)不重置：
+     * 短等重试，旧任务 100ms 周期醒来后 gen 检查自行退出。卡在网络合成/写入的
+     * 旧任务不在 receive 上，首次 reset 即成功 */
+    bool reset_ok = false;
+    for (int i = 0; i < 5; i++) {
+        if (xStreamBufferReset(s_reply_stream) == pdPASS) {
+            reset_ok = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!reset_ok) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_reply_done, 0);
     s_reply_cancel_flag = cancel_flag;
     s_reply_closed = false;
     s_reply_has_content = false;
     s_reply_result = ESP_OK;
     s_reply_task_started = false;
-    ++s_reply_gen; /* 新轮代次：旧任务(300s超时残留)收尾时据此识别自己已过期 */
     s_reply_active = true;
     /* reply_tts_task 延迟到首个 delta 才启动：LLM 工具回合无 delta 时空占 6KB
      * 内部栈，挤压多轮 TLS 的 SSL context 内存(IN_CONTENT_LEN=16KB) */
@@ -173,9 +199,11 @@ esp_err_t va_reply_stream_push_delta(const char *delta)
     if (!delta || !s_reply_active || s_reply_closed) return ESP_ERR_INVALID_STATE;
     if (!s_reply_task_started) {
         uint32_t my_gen = s_reply_gen;
+        s_reply_tasks++;
         BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(reply_stream_task, "reply_tts_task", 6144,
                                                 (void *)(uintptr_t)my_gen, 4, NULL, 0, MALLOC_CAP_SPIRAM);
         if (ok != pdPASS) {
+            s_reply_tasks--;
             s_reply_result = ESP_ERR_NO_MEM;
             return ESP_ERR_NO_MEM;
         }

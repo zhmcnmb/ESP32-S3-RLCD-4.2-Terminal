@@ -31,7 +31,8 @@ static volatile bool s_playback_active;
 static volatile esp_err_t s_playback_result;
 static uint8_t *s_stream_buf;
 static StaticStreamBuffer_t s_stream_state;
-static uint32_t s_playback_gen; /* 每轮 playback 递增；任务持快照，收尾时核对防旧任务污染新轮 */
+static volatile uint32_t s_playback_gen; /* 每轮 playback 递增；任务持快照，收尾时核对防旧任务污染新轮 */
+static volatile int32_t s_playback_tasks; /* 存活 playback 任务数：start 等待归零防并发写 codec */
 
 /* 独立播放任务：从流缓冲取数据写 codec，与网络接收(调用方任务)解耦。
  * 首次收到数据才开PA，收完(closed且缓冲已空)后关PA退出，避免频繁开关咔哒声 */
@@ -48,6 +49,8 @@ static void playback_task(void *arg)
          * 立即退出，否则会读到新轮数据写codec与新播放任务双写 */
         if (s_playback_gen != my_gen) break;
         size_t got = xStreamBufferReceive(s_stream, chunk, sizeof(chunk), pdMS_TO_TICKS(200));
+        /* 阻塞期间换代：不消费(流缓冲单读者，抢走即丢字) */
+        if (s_playback_gen != my_gen) break;
         if (got > 0) {
             if (!pa_on) {
                 audio_pipeline_set_output_enable(true);
@@ -71,6 +74,7 @@ static void playback_task(void *arg)
         s_playback_active = false;
         xSemaphoreGive(s_playback_done);
     }
+    s_playback_tasks--; /* 无条件递减：start 以此等待旧任务退出 */
     ESP_LOGI(TAG, "tts_playback_task 栈余 %uB",
              (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
     vTaskDeleteWithCaps(NULL);
@@ -91,6 +95,10 @@ esp_err_t tts_play_synth_cb(const int16_t *samples, size_t sample_count, void *c
     int16_t gained[128];
     size_t done = 0;
     while (done < sample_count) {
+        /* send 前复查：检查后被抢占换代的窗口内不注入旧 PCM */
+        if (pc->gen != s_playback_gen) {
+            return ESP_ERR_NOT_FINISHED;
+        }
         size_t n = sample_count - done;
         if (n > 128) n = 128;
         for (size_t i = 0; i < n; i++) {
@@ -135,16 +143,36 @@ esp_err_t tts_play_session_start(void)
     if (!s_stream || !s_playback_done || s_playback_active) {
         return ESP_ERR_INVALID_STATE;
     }
+    /* 旧播放任务未退出(300s超时复位残留)：有界等待退出，防新旧并发写 codec */
+    for (int i = 0; i < 20 && s_playback_tasks > 0; i++) {
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (s_playback_tasks > 0) {
+        return ESP_ERR_INVALID_STATE; /* 旧任务卡死，止损：本轮播报失败 */
+    }
+    uint32_t my_gen = ++s_playback_gen; /* 先换代：任何状态变更前旧任务即失效 */
     audio_pipeline_clear_cancel(); /* 清除上轮 finish 超时残留的 cancel 标志 */
-    xStreamBufferReset(s_stream);
+    /* reset 在旧任务阻塞于 receive 时返回 pdFAIL(ESP-IDF stream_buffer)不重置：
+     * 短等重试，旧任务 200ms 周期醒来后 gen 检查自行退出。卡在网络合成/写入的
+     * 旧任务不在 receive 上，首次 reset 即成功 */
+    bool reset_ok = false;
+    for (int i = 0; i < 5; i++) {
+        if (xStreamBufferReset(s_stream) == pdPASS) {
+            reset_ok = true;
+            break;
+        }
+        vTaskDelay(pdMS_TO_TICKS(100));
+    }
+    if (!reset_ok) return ESP_ERR_INVALID_STATE;
     xSemaphoreTake(s_playback_done, 0);
     s_stream_closed = false;
     s_playback_result = ESP_OK;
     s_playback_active = true;
-    uint32_t my_gen = ++s_playback_gen;
+    s_playback_tasks++;
     BaseType_t ok = xTaskCreatePinnedToCoreWithCaps(playback_task, "tts_playback_task",
                                             TTS_PLAYBACK_TASK_STACK, (void *)(uintptr_t)my_gen, 4, NULL, 0, MALLOC_CAP_SPIRAM);
     if (ok != pdPASS) {
+        s_playback_tasks--;
         s_playback_active = false;
         ESP_LOGE(TAG, "播放任务创建失败");
         return ESP_ERR_NO_MEM;
