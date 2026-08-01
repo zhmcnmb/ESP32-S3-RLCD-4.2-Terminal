@@ -42,6 +42,11 @@ void voice_phase_set_turn(uint32_t turn_id)
     s_turn_id = turn_id;
 }
 
+sys_voice_phase_t voice_phase_get(void)
+{
+    return s_phase;
+}
+
 /* 复合状态更新：校验转换合法性 + 推进相位 + (仅ERROR)带短原因文案，
  * page_jarvis 据此区分"网络故障"/"未听清"等，而不是所有异常显示同一个词 */
 void voice_alert(sys_voice_phase_t phase, const char *reason)

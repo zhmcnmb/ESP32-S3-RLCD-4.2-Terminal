@@ -57,6 +57,11 @@ static void cancel_timer_cb(void *arg)
 static void on_agent_tool_state(bool active, void *ctx)
 {
     (void)ctx;
+    /* 混合输出（先出文字再调工具）时播报已开始，工具状态不再影响 UI，
+     * 否则 SPEAKING->EXECUTING/THINKING 被状态机拒绝刷警告 */
+    if (voice_phase_get() == SYS_VOICE_SPEAKING) {
+        return;
+    }
     voice_alert(active ? SYS_VOICE_EXECUTING : SYS_VOICE_THINKING, NULL);
 }
 
