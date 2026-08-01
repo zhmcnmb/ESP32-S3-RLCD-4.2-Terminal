@@ -42,11 +42,13 @@ esp_err_t va_tts_play_clean(const char *text, const volatile bool *cancel_flag, 
 /* 播放会话：tts_client 合成回调与启停，reply 流式任务复用同一播放任务 */
 typedef struct {
     const volatile bool *cancel_flag;
+    uint32_t gen; /* 合成发起时的播放代次快照，回调内校验防旧任务推入新轮流 */
 } tts_play_ctx_t;
 esp_err_t tts_play_synth_cb(const int16_t *samples, size_t sample_count, void *ctx);
 esp_err_t tts_play_session_start(void);
 esp_err_t tts_play_session_close(void);
 void tts_play_session_reset(void);
+uint32_t tts_play_session_gen(void); /* 当前播放代次，供合成回调 ctx 快照 */
 
 /* ---- voice_tts_stream.c：TTS 流式合成+播放 ---- */
 

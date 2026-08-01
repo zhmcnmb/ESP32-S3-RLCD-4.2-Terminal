@@ -54,7 +54,7 @@ static esp_err_t reply_speak(char *pending, size_t *pending_len, size_t sentence
         char saved = has_tail ? pending[sentence_len] : '\0';
         pending[sentence_len] = '\0';
         int status = 0;
-        tts_play_ctx_t pctx = { .cancel_flag = s_reply_cancel_flag };
+        tts_play_ctx_t pctx = { .cancel_flag = s_reply_cancel_flag, .gen = tts_play_session_gen() };
         err = tts_client_synthesize(pending + start, tts_play_synth_cb, &pctx, s_reply_cancel_flag, &status);
         if (err != ESP_OK && err != ESP_ERR_NOT_FINISHED) {
             ESP_LOGW(TAG, "TTS合成失败: %s status=%d", esp_err_to_name(err), status);
@@ -86,25 +86,34 @@ static void reply_stream_task(void *arg)
     }
 
     for (;;) {
+        /* 已被新轮取代(300s超时复位后新轮start递增gen并reset流)：
+         * 立即退出，否则会读到新轮数据重复合成、双写播放流 */
+        if (s_reply_gen != my_gen) break;
         size_t got = xStreamBufferReceive(s_reply_stream, incoming, sizeof(incoming),
                                           pdMS_TO_TICKS(100));
         if (got > 0) {
             if (pending_len + got > TTS_SENTENCE_MAX) {
-                s_reply_result = reply_speak(pending, &pending_len,
-                                              tts_safe_chunk_len(pending, pending_len));
+                esp_err_t r = reply_speak(pending, &pending_len,
+                                          tts_safe_chunk_len(pending, pending_len));
+                if (s_reply_gen != my_gen) break; /* 合成中换代：丢弃结果不污染新轮 */
+                s_reply_result = r;
                 if (s_reply_result != ESP_OK) break;
             }
             memcpy(pending + pending_len, incoming, got);
             pending_len += got;
             size_t chunk_len = tts_sentences_len(pending, pending_len);
             if (chunk_len > 0) {
-                s_reply_result = reply_speak(pending, &pending_len, chunk_len);
+                esp_err_t r = reply_speak(pending, &pending_len, chunk_len);
+                if (s_reply_gen != my_gen) break;
+                s_reply_result = r;
             }
             if (s_reply_result != ESP_OK) break;
         }
         if (s_reply_closed && xStreamBufferIsEmpty(s_reply_stream)) {
             if (pending_len > 0) {
-                s_reply_result = reply_speak(pending, &pending_len, pending_len);
+                esp_err_t r = reply_speak(pending, &pending_len, pending_len);
+                if (s_reply_gen != my_gen) break;
+                s_reply_result = r;
             }
             break;
         }
