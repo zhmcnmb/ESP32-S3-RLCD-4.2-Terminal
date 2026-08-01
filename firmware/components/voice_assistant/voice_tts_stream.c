@@ -180,6 +180,11 @@ esp_err_t va_reply_stream_push_delta(const char *delta)
         if (s_reply_cancel_flag && *s_reply_cancel_flag) return ESP_ERR_NOT_FINISHED;
         if (s_reply_result != ESP_OK) return s_reply_result;
         size_t window = remaining > REPLY_FILTER_WINDOW ? REPLY_FILTER_WINDOW : remaining;
+        /* "- " 配对跨窗口时会把减号读出来：窗口尾是 '-' 且有后续内容时
+         * 让给下一窗口一起过滤 */
+        if (remaining > window && cursor[window - 1] == '-') {
+            window--;
+        }
         size_t filtered_len = tts_strip_markdown(cursor, window, filtered);
         size_t sent_total = 0;
         while (sent_total < filtered_len) {

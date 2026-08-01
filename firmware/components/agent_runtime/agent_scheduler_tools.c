@@ -72,40 +72,16 @@ void agent_scheduler_tools_prepare(const char *user_text)
     s_allow_set = user_requests_set(user_text);
 }
 
-static bool has_fields(const cJSON *args, const char *first, const char *second, const char *third)
-{
-    if (!cJSON_IsObject(args)) return false;
-    if (!first) return args->child == NULL;
-    const char *names[] = {first, second, third};
-    bool seen[3] = {false};
-    for (const cJSON *item = args->child; item; item = item->next) {
-        if (!item->string) return false;
-        int i = 0;
-        while (i < 3 && (!names[i] || strcmp(item->string, names[i]) != 0 || seen[i])) i++;
-        if (i == 3) return false;
-        seen[i] = true;
-    }
-    return seen[0] && (!second || seen[1]) && (!third || seen[2]);
-}
-
-static bool parse_uint(const cJSON *args, const char *name, uint32_t max, uint32_t *out)
-{
-    const cJSON *item = cJSON_GetObjectItemCaseSensitive(args, name);
-    if (!cJSON_IsNumber(item) || item->valuedouble < 1 || item->valuedouble > max
-        || item->valuedouble != (double)(uint32_t)item->valuedouble) return false;
-    *out = (uint32_t)item->valuedouble;
-    return true;
-}
-
 static esp_err_t tool_set(const cJSON *args, cJSON **out)
 {
     const cJSON *text = cJSON_GetObjectItemCaseSensitive(args, "text");
     const cJSON *repeat = cJSON_GetObjectItemCaseSensitive(args, "repeat");
     uint32_t minutes = 0;
-    if (!s_allow_set || !out || !has_fields(args, "text", "minutes", "repeat")
+    const char *required[] = {"text", "minutes", "repeat"};
+    if (!s_allow_set || !out || !agent_args_validate(args, required, 3, NULL, 0)
         || !cJSON_IsString(text) || !text->valuestring[0]
         || strlen(text->valuestring) >= SCHEDULER_TEXT_MAX || !cJSON_IsBool(repeat)
-        || !parse_uint(args, "minutes", 1440, &minutes)) return ESP_ERR_INVALID_ARG;
+        || !agent_args_parse_uint(args, "minutes", 1, 1440, &minutes)) return ESP_ERR_INVALID_ARG;
     cJSON *result = cJSON_CreateObject();
     cJSON *id_item = result ? cJSON_AddNumberToObject(result, "id", 0) : NULL;
     if (!id_item || !cJSON_AddNumberToObject(result, "fire_in_minutes", minutes)) {
@@ -128,8 +104,9 @@ static esp_err_t tool_set(const cJSON *args, cJSON **out)
 static esp_err_t tool_cancel(const cJSON *args, cJSON **out)
 {
     uint32_t id = 0;
-    if (!s_allow_cancel || !out || !has_fields(args, "id", NULL, NULL)
-        || !parse_uint(args, "id", UINT32_MAX, &id)) return ESP_ERR_INVALID_ARG;
+    const char *required[] = {"id"};
+    if (!s_allow_cancel || !out || !agent_args_validate(args, required, 1, NULL, 0)
+        || !agent_args_parse_uint(args, "id", 1, UINT32_MAX, &id)) return ESP_ERR_INVALID_ARG;
     cJSON *result = cJSON_CreateObject();
     cJSON *cancelled = result ? cJSON_AddBoolToObject(result, "cancelled", false) : NULL;
     if (!cancelled) {
@@ -165,7 +142,7 @@ static esp_err_t tool_list(const cJSON *args, cJSON **out)
 {
     scheduler_task_info_t items[SCHEDULER_TASK_MAX];
     size_t count = 0;
-    if (!out || !has_fields(args, NULL, NULL, NULL)) return ESP_ERR_INVALID_ARG;
+    if (!out || !agent_args_validate(args, NULL, 0, NULL, 0)) return ESP_ERR_INVALID_ARG;
     esp_err_t err = scheduler_list(items, SCHEDULER_TASK_MAX, &count);
     if (err != ESP_OK) return err;
     cJSON *json = cJSON_CreateObject();

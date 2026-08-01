@@ -46,3 +46,13 @@ void agent_scheduler_tools_prepare(const char *user_text);
 const llm_tool_def_t *agent_scheduler_tools_get_definitions(int *out_count);
 bool agent_scheduler_tools_handles(const char *name);
 esp_err_t agent_scheduler_tools_execute(const char *name, const cJSON *args, cJSON **out);
+
+/* agent_args.c：工具参数校验共享 helper，各工具 adapter 复用 */
+/* 校验 args 恰好含 required 全部字段与 optional 任意子集，无其他字段；
+ * required_count==0 且 optional_count==0 时要求 args 为空对象。
+ * 字段名重复只要求出现一次（如 "limit","limit" 即单个必需字段）。 */
+bool agent_args_validate(const cJSON *args, const char *const required[], int required_count,
+                         const char *const optional[], int optional_count);
+/* 解析 uint 参数：整数且 min<=v<=max，否则 false */
+bool agent_args_parse_uint(const cJSON *args, const char *name, uint32_t min,
+                           uint32_t max, uint32_t *out);

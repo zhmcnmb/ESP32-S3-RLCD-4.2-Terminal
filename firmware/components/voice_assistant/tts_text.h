@@ -1,8 +1,13 @@
 #pragma once
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #define TTS_SENTENCE_MAX 1024
+
+/* 文本是否含 Markdown 记号（* ` # _ 或 "- "），与 tts_strip_markdown 的
+ * 过滤字符集单一来源：va_tts_play_clean 用它做免分配快路径 */
+bool tts_contains_markdown(const char *text);
 
 /* 过滤 Markdown 记号(* ` # _ 和 "- " 列表标记)，out 至少 len 字节，
  * 返回写入字节数(<=len，不含结尾'\0'，调用方自行补)。 */

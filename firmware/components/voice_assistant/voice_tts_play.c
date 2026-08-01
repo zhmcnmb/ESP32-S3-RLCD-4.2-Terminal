@@ -186,7 +186,7 @@ esp_err_t va_tts_play_clean(const char *text, const volatile bool *cancel_flag, 
 {
     if (out_status) *out_status = 0;
     if (!text) return ESP_ERR_INVALID_ARG;
-    if (!strpbrk(text, "*`#_-")) return va_tts_play(text, cancel_flag, out_status);
+    if (!tts_contains_markdown(text)) return va_tts_play(text, cancel_flag, out_status);
     size_t len = strlen(text);
     char *filtered = heap_caps_malloc(len + 1, MALLOC_CAP_SPIRAM);
     /* 过滤缓存不足时宁可失败，也不能退回原文把Markdown记号朗读出来。 */
