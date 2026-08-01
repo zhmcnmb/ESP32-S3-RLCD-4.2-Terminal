@@ -211,7 +211,8 @@ esp_err_t va_tts_play(const char *text, const volatile bool *cancel_flag, int *o
     if (!text) return ESP_ERR_INVALID_ARG;
     int discarded_status = 0;
     int *status = out_status ? out_status : &discarded_status;
-    audio_pipeline_clear_cancel();
+    /* cancel 清除统一在 tts_play_session_start(等待旧任务退出后)执行，
+     * 这里提前 clear 会重新放行超时残留的旧 playback */
     esp_err_t err = tts_play_session_start();
     if (err != ESP_OK) return err;
     tts_play_ctx_t ctx = { .cancel_flag = cancel_flag, .gen = s_playback_gen };
