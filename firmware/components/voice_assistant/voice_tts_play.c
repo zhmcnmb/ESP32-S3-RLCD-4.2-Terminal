@@ -44,6 +44,9 @@ static void playback_task(void *arg)
     bool pa_on = false;
 
     for (;;) {
+        /* 已被新轮取代(300s超时复位后新轮start递增gen并reset流)：
+         * 立即退出，否则会读到新轮数据写codec与新播放任务双写 */
+        if (s_playback_gen != my_gen) break;
         size_t got = xStreamBufferReceive(s_stream, chunk, sizeof(chunk), pdMS_TO_TICKS(200));
         if (got > 0) {
             if (!pa_on) {
@@ -51,6 +54,7 @@ static void playback_task(void *arg)
                 pa_on = true;
             }
             esp_err_t err = audio_pipeline_write(chunk, got / sizeof(int16_t));
+            if (s_playback_gen != my_gen) break; /* 写入中换代：丢弃结果不污染新轮 */
             if (err != ESP_OK) {
                 s_playback_result = err;
                 ESP_LOGW(TAG, "音频写入失败: %s", esp_err_to_name(err));
@@ -77,6 +81,10 @@ static void playback_task(void *arg)
 esp_err_t tts_play_synth_cb(const int16_t *samples, size_t sample_count, void *ctx)
 {
     tts_play_ctx_t *pc = ctx;
+    /* 合成途中播放会话被强制复位换代：中止推入，避免旧合成污染新轮流 */
+    if (pc->gen != s_playback_gen) {
+        return ESP_ERR_NOT_FINISHED;
+    }
     if (pc->cancel_flag && *pc->cancel_flag) {
         return ESP_ERR_NOT_FINISHED;
     }
@@ -164,6 +172,11 @@ void tts_play_session_reset(void)
     s_stream_closed = true;
 }
 
+uint32_t tts_play_session_gen(void)
+{
+    return s_playback_gen;
+}
+
 esp_err_t va_tts_play(const char *text, const volatile bool *cancel_flag, int *out_status)
 {
     if (out_status) *out_status = 0;
@@ -173,7 +186,7 @@ esp_err_t va_tts_play(const char *text, const volatile bool *cancel_flag, int *o
     audio_pipeline_clear_cancel();
     esp_err_t err = tts_play_session_start();
     if (err != ESP_OK) return err;
-    tts_play_ctx_t ctx = { .cancel_flag = cancel_flag };
+    tts_play_ctx_t ctx = { .cancel_flag = cancel_flag, .gen = s_playback_gen };
     err = tts_client_synthesize(text, tts_play_synth_cb, &ctx, cancel_flag, status);
     if (err != ESP_OK && err != ESP_ERR_NOT_FINISHED) {
         ESP_LOGW(TAG, "TTS合成失败: %s status=%d", esp_err_to_name(err), *status);
