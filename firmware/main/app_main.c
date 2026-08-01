@@ -43,6 +43,7 @@ void app_main(void)
         .qweather_location = QWEATHER_LOCATION,
         .siliconflow_api_key = SILICONFLOW_API_KEY,
         .siliconflow_llm_model = "deepseek-ai/DeepSeek-V4-Flash",
+        .llm_base_url = "https://api.siliconflow.cn/v1/chat/completions",
         .deepseek_api_key = DEEPSEEK_API_KEY,
         .use_deepseek_llm = false, /* 对话继续走SiliconFlow，不切到DeepSeek直连 */
         .jina_api_key = OPTIONAL_JINA_API_KEY,

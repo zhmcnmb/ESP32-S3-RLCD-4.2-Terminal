@@ -4,6 +4,12 @@
 
 #include <string.h>
 
+/* 快路径判定与过滤共用同一字符集（含 "- " 配对），新增记号只改这一处 */
+bool tts_contains_markdown(const char *text)
+{
+    return strpbrk(text, "*`#_-") != NULL;
+}
+
 size_t tts_strip_markdown(const char *src, size_t len, char *out)
 {
     size_t n = 0;

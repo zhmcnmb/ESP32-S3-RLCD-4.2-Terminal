@@ -47,7 +47,8 @@ typedef struct {
     void *ctx;
 } llm_stream_sink_t;
 
-esp_err_t llm_provider_init(llm_provider_kind_t provider, const char *api_key, const char *model);
+esp_err_t llm_provider_init(llm_provider_kind_t provider, const char *api_key,
+                             const char *model, const char *base_url);
 
 esp_err_t llm_provider_chat(const llm_message_t *messages, int message_count,
                              const llm_tool_def_t *tools, int tool_count,

@@ -1,6 +1,6 @@
 /*
  * LLM Provider 门面：请求体构建、SSE 流解析、tool_calls 增量累积、重试与错误分类。
- * base URL 由各 provider 专用 .c 提供，本文件按 kind 分发。
+ * base URL 为 provider 端点常量，本文件按 kind 分发。
  */
 #include "llm_provider.h"
 #include "llm_sse.h"
@@ -21,24 +21,7 @@ static bool s_initialized = false;
 static llm_provider_kind_t s_provider_kind;
 static char s_api_key[256];
 static char s_model[128];
-
-
-/* provider URL 分发 */
-extern const char *llm_provider_get_siliconflow_url(void);
-extern const char *llm_provider_get_deepseek_url(void);
-
-static const char *get_base_url(llm_provider_kind_t kind)
-{
-    switch (kind) {
-    case LLM_PROVIDER_SILICONFLOW:
-        return llm_provider_get_siliconflow_url();
-    case LLM_PROVIDER_DEEPSEEK:
-        return llm_provider_get_deepseek_url();
-    default:
-        return NULL;
-    }
-}
-
+static char s_base_url[192]; /* 端点由 app_runtime 配置传入(URL 须配置化) */
 
 
 /* 单次 HTTP 往返 */
@@ -54,8 +37,8 @@ static esp_err_t do_chat_once(const llm_message_t *messages, int message_count,
     if (err != ESP_OK) {
         return err;
     }
-    const char *url = get_base_url(s_provider_kind);
-    if (!url) {
+    const char *url = s_base_url;
+    if (!url || !url[0]) {
         free(body);
         return ESP_ERR_INVALID_ARG;
     }
@@ -68,9 +51,10 @@ static esp_err_t do_chat_once(const llm_message_t *messages, int message_count,
 }
 
 /* 公开 API */
-esp_err_t llm_provider_init(llm_provider_kind_t provider, const char *api_key, const char *model)
+esp_err_t llm_provider_init(llm_provider_kind_t provider, const char *api_key,
+                             const char *model, const char *base_url)
 {
-    if (!api_key || !api_key[0] || !model || !model[0]) {
+    if (!api_key || !api_key[0] || !model || !model[0] || !base_url || !base_url[0]) {
         return ESP_ERR_INVALID_ARG;
     }
     s_provider_kind = provider;
@@ -78,6 +62,8 @@ esp_err_t llm_provider_init(llm_provider_kind_t provider, const char *api_key, c
     s_api_key[sizeof(s_api_key) - 1] = '\0';
     strncpy(s_model, model, sizeof(s_model) - 1);
     s_model[sizeof(s_model) - 1] = '\0';
+    strncpy(s_base_url, base_url, sizeof(s_base_url) - 1);
+    s_base_url[sizeof(s_base_url) - 1] = '\0';
     s_initialized = true;
     ESP_LOGI(TAG, "init OK, provider=%s model=%s",
              provider == LLM_PROVIDER_SILICONFLOW ? "siliconflow" : "deepseek",
