@@ -30,8 +30,9 @@ typedef struct {
     const char *qweather_location; /* LocationID，如 "101010100" */
     const char *siliconflow_api_key; /* P5.0 ASR/TTS/LLM，SiliconFlow平台Key */
     const char *siliconflow_llm_model; /* SiliconFlow LLM精确模型标识，不含provider URL */
-    const char *llm_base_url;          /* LLM端点(URL须配置化)；use_deepseek_llm切换时同步改 */
+    const char *siliconflow_llm_url; /* SiliconFlow LLM端点，URL须配置化 */
     const char *deepseek_api_key;    /* P5.0 LLM可选切换，留空则只用SiliconFlow */
+    const char *deepseek_llm_url;    /* DeepSeek LLM端点，use_deepseek_llm 时生效 */
     bool use_deepseek_llm;            /* true=LLM走DeepSeek，false(默认)=走SiliconFlow */
     const char *jina_api_key;         /* P6.1 Web Search/Reader，可选；为空则不注册联网工具 */
 } app_runtime_config_t;

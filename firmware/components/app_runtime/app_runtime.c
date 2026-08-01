@@ -111,12 +111,12 @@ static void start_network(const app_runtime_config_t *cfg)
     log_if_failed(asr_client_init(cfg->siliconflow_api_key), "ASR客户端启动");
     log_if_failed(tts_client_init(cfg->siliconflow_api_key), "TTS客户端启动");
     if (cfg->use_deepseek_llm) {
-        log_if_failed(llm_provider_init(LLM_PROVIDER_DEEPSEEK, cfg->deepseek_api_key, "deepseek-chat",
-                                        cfg->llm_base_url),
+        log_if_failed(llm_provider_init(cfg->deepseek_api_key, "deepseek-chat",
+                                        cfg->deepseek_llm_url),
                       "LLM客户端启动(DeepSeek)");
     } else {
-        log_if_failed(llm_provider_init(LLM_PROVIDER_SILICONFLOW, cfg->siliconflow_api_key,
-                                        cfg->siliconflow_llm_model, cfg->llm_base_url),
+        log_if_failed(llm_provider_init(cfg->siliconflow_api_key,
+                                        cfg->siliconflow_llm_model, cfg->siliconflow_llm_url),
                       "LLM客户端启动(SiliconFlow)");
     }
     if (cfg->jina_api_key && cfg->jina_api_key[0]) {
