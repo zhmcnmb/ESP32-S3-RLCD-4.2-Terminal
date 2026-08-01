@@ -26,7 +26,7 @@ int32_t va_wav_normalize_utterance(int16_t *pcm, size_t n);
 /* 写入固定相对路径 WAV 文件，供 asr_client_transcribe() 读取 */
 esp_err_t va_wav_save_utterance(const int16_t *pcm, size_t n);
 
-/* ---- voice_tts_stream.c：TTS 流式合成+播放 ---- */
+/* ---- voice_tts_play.c：PCM 流播放会话(va_tts_play 与 reply 流式共用) ---- */
 
 /* 创建流缓冲与信号量，voice_assistant_start() 里调用一次 */
 esp_err_t va_tts_stream_init(void);
@@ -38,6 +38,17 @@ esp_err_t va_tts_play(const char *text, const volatile bool *cancel_flag, int *o
 /* 过滤 Markdown 记号后再流式播放；过滤缓存分配失败时返回ESP_ERR_NO_MEM，
  * 绝不退回原文，以免把Markdown记号朗读出来。 */
 esp_err_t va_tts_play_clean(const char *text, const volatile bool *cancel_flag, int *out_status);
+
+/* 播放会话：tts_client 合成回调与启停，reply 流式任务复用同一播放任务 */
+typedef struct {
+    const volatile bool *cancel_flag;
+} tts_play_ctx_t;
+esp_err_t tts_play_synth_cb(const int16_t *samples, size_t sample_count, void *ctx);
+esp_err_t tts_play_session_start(void);
+esp_err_t tts_play_session_close(void);
+void tts_play_session_reset(void);
+
+/* ---- voice_tts_stream.c：TTS 流式合成+播放 ---- */
 
 
 /* 将模型增量文本按句排队给 TTS；后台任务负责边接收边播放，调用方只传递片段。 */
