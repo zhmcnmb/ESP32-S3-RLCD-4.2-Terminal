@@ -1,6 +1,6 @@
 /*
  * LLM Provider 门面：请求体构建、SSE 流解析、tool_calls 增量累积、重试与错误分类。
- * base URL 为 provider 端点常量，本文件按 kind 分发。
+ * base URL 由 app_runtime 配置注入(URL 须配置化)。
  */
 #include "llm_provider.h"
 #include "llm_sse.h"
