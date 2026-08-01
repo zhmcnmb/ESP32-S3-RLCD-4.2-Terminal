@@ -77,7 +77,11 @@ static void on_wifi_connected(void)
             return;
         }
     }
-    esp_timer_start_once(sntp_timer, 0); /* 立即触发，但在esp_timer任务上下文执行 */
+    esp_err_t err = esp_timer_start_once(sntp_timer, 0); /* 立即触发，但在esp_timer任务上下文执行 */
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "SNTP定时器启动失败: %s，直接启动", esp_err_to_name(err));
+        log_if_failed(time_service_start_sntp(), "SNTP启动");
+    }
 }
 
 /* 网络与校时异步进行: 没网也要能显示时间(RTC)和温湿度，所以不阻塞UI启动 */

@@ -260,12 +260,8 @@ static void process_due_tasks(void)
         if (normalize_after_clock_sync_locked(now)) persist_best_effort_locked();
     }
     /* NTP大幅回拨/前跳(>60s)时重新normalize，避免过期任务积压或间隔跑偏 */
-    if (s_last_tick != 0) {
-        time_t diff = now > s_last_tick ? now - s_last_tick : s_last_tick - now;
-        if (diff > 60) {
-            if (normalize_after_clock_sync_locked(now)) persist_best_effort_locked();
-        }
-    }
+    time_t diff = s_last_tick ? (now > s_last_tick ? now - s_last_tick : s_last_tick - now) : 0;
+    if (diff > 60 && normalize_after_clock_sync_locked(now)) persist_best_effort_locked();
     for (size_t i = 0; i < SCHEDULER_TASK_MAX; i++) {
         scheduler_entry_t *entry = &s_tasks[i];
         if (!entry->active || entry->info.fire_at > now) continue;

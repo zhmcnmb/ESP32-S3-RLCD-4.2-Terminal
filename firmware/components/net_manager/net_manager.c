@@ -76,6 +76,30 @@ static void on_wifi_event(void *arg, esp_event_base_t base, int32_t id, void *da
     }
 }
 
+/* WiFi STA 启动序列：net_init 的中间段，拆出压函数红线 */
+static esp_err_t wifi_start_sta(const char *ssid, const char *password)
+{
+    ESP_RETURN_ON_ERROR(esp_netif_init(), TAG, "netif init");
+    ESP_RETURN_ON_ERROR(esp_event_loop_create_default(), TAG, "event loop");
+    if (!esp_netif_create_default_wifi_sta()) {
+        ESP_LOGE(TAG, "创建默认WiFi STA失败");
+        return ESP_ERR_NO_MEM;
+    }
+    wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_RETURN_ON_ERROR(esp_wifi_init(&init_cfg), TAG, "wifi init");
+    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID,
+                                                            on_wifi_event, NULL, NULL), TAG, "wifi handler");
+    ESP_RETURN_ON_ERROR(esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP,
+                                                            on_wifi_event, NULL, NULL), TAG, "ip handler");
+    wifi_config_t wifi_cfg = { 0 };
+    strncpy((char *)wifi_cfg.sta.ssid, ssid, sizeof(wifi_cfg.sta.ssid) - 1);
+    strncpy((char *)wifi_cfg.sta.password, password, sizeof(wifi_cfg.sta.password) - 1);
+    ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "wifi mode");
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "wifi config");
+    ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
+    return ESP_OK;
+}
+
 esp_err_t net_init(const char *ssid, const char *password)
 {
     ESP_RETURN_ON_FALSE(ssid && password, ESP_ERR_INVALID_ARG, TAG, "bad arg");
@@ -101,48 +125,7 @@ esp_err_t net_init(const char *ssid, const char *password)
         goto cleanup_events;
     }
 
-    err = esp_netif_init();
-    if (err != ESP_OK) {
-        goto cleanup_timer;
-    }
-    err = esp_event_loop_create_default();
-    if (err != ESP_OK) {
-        goto cleanup_timer;
-    }
-    if (!esp_netif_create_default_wifi_sta()) {
-        ESP_LOGE(TAG, "创建默认WiFi STA失败");
-        err = ESP_ERR_NO_MEM;
-        goto cleanup_timer;
-    }
-
-    wifi_init_config_t init_cfg = WIFI_INIT_CONFIG_DEFAULT();
-    err = esp_wifi_init(&init_cfg);
-    if (err != ESP_OK) {
-        goto cleanup_timer;
-    }
-
-    err = esp_event_handler_instance_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_wifi_event, NULL, NULL);
-    if (err != ESP_OK) {
-        goto cleanup_timer;
-    }
-    err = esp_event_handler_instance_register(IP_EVENT, IP_EVENT_STA_GOT_IP, on_wifi_event, NULL, NULL);
-    if (err != ESP_OK) {
-        goto cleanup_timer;
-    }
-
-    wifi_config_t wifi_cfg = { 0 };
-    strncpy((char *)wifi_cfg.sta.ssid, ssid, sizeof(wifi_cfg.sta.ssid) - 1);
-    strncpy((char *)wifi_cfg.sta.password, password, sizeof(wifi_cfg.sta.password) - 1);
-
-    err = esp_wifi_set_mode(WIFI_MODE_STA);
-    if (err != ESP_OK) {
-        goto cleanup_timer;
-    }
-    err = esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg);
-    if (err != ESP_OK) {
-        goto cleanup_timer;
-    }
-    err = esp_wifi_start();
+    err = wifi_start_sta(ssid, password);
     if (err != ESP_OK) {
         goto cleanup_timer;
     }
