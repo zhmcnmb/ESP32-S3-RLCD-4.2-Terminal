@@ -18,7 +18,6 @@ static const char *TAG = "llm_provider";
 
 /* 运行时状态 */
 static bool s_initialized = false;
-static llm_provider_kind_t s_provider_kind;
 static char s_api_key[256];
 static char s_model[128];
 static char s_base_url[192]; /* 端点由 app_runtime 配置传入(URL 须配置化) */
@@ -51,13 +50,11 @@ static esp_err_t do_chat_once(const llm_message_t *messages, int message_count,
 }
 
 /* 公开 API */
-esp_err_t llm_provider_init(llm_provider_kind_t provider, const char *api_key,
-                             const char *model, const char *base_url)
+esp_err_t llm_provider_init(const char *api_key, const char *model, const char *base_url)
 {
     if (!api_key || !api_key[0] || !model || !model[0] || !base_url || !base_url[0]) {
         return ESP_ERR_INVALID_ARG;
     }
-    s_provider_kind = provider;
     strncpy(s_api_key, api_key, sizeof(s_api_key) - 1);
     s_api_key[sizeof(s_api_key) - 1] = '\0';
     strncpy(s_model, model, sizeof(s_model) - 1);
@@ -65,9 +62,7 @@ esp_err_t llm_provider_init(llm_provider_kind_t provider, const char *api_key,
     strncpy(s_base_url, base_url, sizeof(s_base_url) - 1);
     s_base_url[sizeof(s_base_url) - 1] = '\0';
     s_initialized = true;
-    ESP_LOGI(TAG, "init OK, provider=%s model=%s",
-             provider == LLM_PROVIDER_SILICONFLOW ? "siliconflow" : "deepseek",
-             s_model);
+    ESP_LOGI(TAG, "init OK, model=%s base=%s", s_model, s_base_url);
     return ESP_OK;
 }
 esp_err_t llm_provider_chat(const llm_message_t *messages, int message_count,
