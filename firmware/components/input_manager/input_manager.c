@@ -45,7 +45,7 @@ static bool update_button(button_state_t *state, bool raw_pressed)
     return true;
 }
 
-/* KEY短按 NEXT；长按不发布。BOOT 短按 ACTION、长按 BACK。 */
+/* KEY短按 NEXT、长按 PREV；BOOT 短按 ACTION、长按 BACK。 */
 static void poll_gpio(void)
 {
     static button_state_t key;
@@ -56,6 +56,7 @@ static void poll_gpio(void)
         key.held_ms += POLL_INTERVAL_MS;
         if (!key.long_fired && key.held_ms >= LONG_PRESS_MS) {
             key.long_fired = true;
+            emit(INPUT_EVENT_PREV);
         }
     } else if (key_changed) {
         if (!key.long_fired) {

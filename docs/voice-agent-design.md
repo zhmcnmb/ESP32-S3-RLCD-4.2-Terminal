@@ -52,7 +52,7 @@ MultiNet 命令词“贾维斯”
 ```
 
 - `voice_assistant` 维护 `IDLE -> LISTENING -> TRANSCRIBING -> THINKING/EXECUTING -> SPEAKING -> IDLE`；异常和取消收敛回 `IDLE`。
-- MultiNet 命令词是当前“贾维斯”入口；KEY 只短按翻页，BOOT 只用于真实确认或语音活动时的长按取消。
+- MultiNet 命令词是当前“贾维斯”入口；KEY 短按下一页、长按上一页；BOOT 短按空闲时 push-to-talk、长按取消语音。
 - 回复流在 TTS 前剥离 `*`、反引号、`#`、`_`；UTF-8 分块只提交完整字符前缀；PCM 分片始终按完整 `int16_t` 样本交付。
 - TTS 复用同一 host 的 TCP/TLS 连接；零 PCM 或陈旧连接会关闭并重连一次。异常、取消和半截响应都丢弃连接，避免污染下一句。
 - 传输层在每个上传分片和每轮读取前检查取消与 45 秒总预算；ASR 对非取消失败重试一次。

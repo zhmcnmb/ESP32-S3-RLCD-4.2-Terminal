@@ -18,7 +18,8 @@ extern "C" {
 
 typedef enum {
     UI_KEY_NEXT,   /* KEY短按: 切换到下一页 (由ui_manager处理，不下发给页面) */
-    UI_KEY_ACTION, /* BOOT短按: 页面内动作 */
+    UI_KEY_PREV,   /* KEY长按: 上一页(ui_manager处理) */
+    UI_KEY_ACTION, /* BOOT短按: 空闲时手动触发语音, 否则页面内动作 */
     UI_KEY_BACK,   /* BOOT长按: 返回/取消 */
 } ui_key_event_t;
 

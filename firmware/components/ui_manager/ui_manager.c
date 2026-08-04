@@ -48,6 +48,15 @@ static bool cancel_active_voice(ui_key_event_t evt)
     return true;
 }
 
+static void trigger_idle_voice(void)
+{
+    sys_state_snapshot_t snap;
+    sys_state_get_snapshot(&snap);
+    if (snap.voice_phase == SYS_VOICE_IDLE) {
+        sys_state_request_voice_trigger();
+    }
+}
+
 static void dispatch_key(ui_key_event_t evt)
 {
     if (s_current < 0) {
@@ -62,6 +71,10 @@ static void dispatch_key(ui_key_event_t evt)
     }
     if (evt == UI_KEY_NEXT) {
         enter_page((s_current + 1) % s_page_count);
+    } else if (evt == UI_KEY_PREV) {
+        enter_page((s_current - 1 + s_page_count) % s_page_count);
+    } else if (evt == UI_KEY_ACTION) {
+        trigger_idle_voice(); /* BOOT短按: 空闲时手动触发语音 */
     }
 }
 
@@ -72,6 +85,9 @@ static void dispatch_input(input_event_t evt)
     switch (evt) {
     case INPUT_EVENT_NEXT:
         dispatch_key(UI_KEY_NEXT);
+        break;
+    case INPUT_EVENT_PREV:
+        dispatch_key(UI_KEY_PREV);
         break;
     case INPUT_EVENT_ACTION:
         dispatch_key(UI_KEY_ACTION);

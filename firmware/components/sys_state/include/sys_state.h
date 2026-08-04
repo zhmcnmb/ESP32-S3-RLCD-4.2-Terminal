@@ -126,6 +126,10 @@ void sys_state_apply_voice(sys_voice_phase_t phase, uint32_t turn_id, const char
 void sys_state_request_voice_cancel(void);
 bool sys_state_consume_voice_cancel(void);
 
+/* 页面提交手动触发请求(push-to-talk); voice_assistant 空闲时轮询 consume 后清位 */
+void sys_state_request_voice_trigger(void);
+bool sys_state_consume_voice_trigger(void);
+
 /* scheduler 投递到期提醒；上一条尚未播出时返回false，调用方下秒重试。 */
 bool sys_state_post_reminder(const char *text);
 

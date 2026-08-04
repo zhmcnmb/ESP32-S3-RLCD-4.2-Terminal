@@ -8,7 +8,7 @@
 
 - P5.2 单轮语音闭环核心已真机验证。
 - P6.0 agent、P6.1 Web / Skills、P6.2 记忆 M1、P6.3 提醒 M1 已实现；SD、Jina、提醒等完整真机验收仍未完成，不能表述为已完成。
-- 当前 UI 工作只改视觉；不得改变页面顺序、按键语义、`sys_state` 数据路径或任何降级逻辑。
+- 当前 UI 工作只改视觉；不得改变页面顺序、已定按键语义(KEY短/长=NEXT/PREV，BOOT短/长=PTT/CANCEL)、`sys_state` 数据路径或任何降级逻辑。
 - 五个页面分别为 Jarvis / 时钟 / 天气 / 环境趋势 / 调试(已从翻页移除)；`page_quota` 已删除。
 
 ## 权威文档
@@ -66,7 +66,7 @@ app_runtime                         启动、注册、降级
 
 ## 输入与 UI
 
-- `input_manager` 是 KEY/BOOT 唯一 GPIO 所有者。KEY 当前仅短按 NEXT；BOOT 只用于真实确认或语音活动时的长按 CANCEL；PWR 不可分配固件功能。
+- `input_manager` 是 KEY/BOOT 唯一 GPIO 所有者。KEY 短按 NEXT、长按 PREV；BOOT 短按空闲时 push-to-talk、长按 CANCEL；PWR 不可分配固件功能。
 - UI 是 400×300、1bpp 的 ST7305 反射屏。正常状态安静，不重复说明成功状态或按键教程；异常、确认与可恢复动作才显示短文案。
 - 五个页面的视觉改动只能调整排版和绘制，不能改功能。已移除 `page_quota`，剩余四个翻页页面(jarvis/home/weather/env_monitor)。
 - ASCII 字库只覆盖 `0x20..0x5A`。改动固件中文字符串或 `tools/charset.txt` 后必须运行 `python3 tools/gen_font.py`；不要手改 `font_cn16.c`。

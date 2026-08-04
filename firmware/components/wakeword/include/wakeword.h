@@ -52,6 +52,11 @@ esp_err_t wakeword_start(void);
 /* 停止检测task，可重复调用 wakeword_start() 恢复 */
 esp_err_t wakeword_stop(void);
 
+/* 手动触发一轮录音(push-to-talk)，等效唤醒词命中，复用 VAD 录音管线。
+ * 仅 STATE_IDLE 且检测任务运行时有效；与真实唤醒并发时由 voice_assistant
+ * 的 s_in_turn 守卫保证只有一轮生效。 */
+esp_err_t wakeword_trigger(void);
+
 esp_err_t wakeword_deinit(void);
 
 #ifdef __cplusplus

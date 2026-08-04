@@ -18,6 +18,7 @@
 static sys_state_snapshot_t s_state;
 static SemaphoreHandle_t s_lock;
 static bool s_voice_cancel_req = false;
+static bool s_voice_trigger_req = false;
 static char s_reminder[SYS_STATE_REMINDER_TEXT_MAX]; /* 空串=无待播报提醒 */
 
 /* 所有apply_*()共用的收尾: 持锁写完字段后统一在这里递增版本号，
@@ -173,6 +174,28 @@ bool sys_state_consume_voice_cancel(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool req = s_voice_cancel_req;
     s_voice_cancel_req = false;
+    xSemaphoreGive(s_lock);
+    return req;
+}
+
+void sys_state_request_voice_trigger(void)
+{
+    if (!s_lock) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_voice_trigger_req = true;
+    xSemaphoreGive(s_lock);
+}
+
+bool sys_state_consume_voice_trigger(void)
+{
+    if (!s_lock) {
+        return false;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool req = s_voice_trigger_req;
+    s_voice_trigger_req = false;
     xSemaphoreGive(s_lock);
     return req;
 }

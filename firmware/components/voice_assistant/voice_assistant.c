@@ -342,6 +342,15 @@ static void voice_task(void *arg)
         if (received == pdTRUE && !s_busy) {
             dispatch_wake_event(evt);
         } else if (!s_busy && !s_in_turn) {
+            if (sys_state_consume_voice_trigger()) {
+                /* push-to-talk: wakeword_trigger 投递 WAKE 到本队列,
+                 * 下一轮 dispatch_wake_event 接管, 与唤醒词路径完全一致 */
+                esp_err_t err = wakeword_trigger();
+                if (err != ESP_OK) {
+                    ESP_LOGW(TAG, "手动触发失败: %s", esp_err_to_name(err));
+                }
+                continue;
+            }
             play_pending_reminder();
         }
     }
