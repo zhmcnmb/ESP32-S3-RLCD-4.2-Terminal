@@ -13,7 +13,8 @@ extern "C" {
  *
  * 交互约定:
  *   NEXT (KEY短按)    -> 切换到下一页
- *   ACTION (BOOT短按) -> UI_KEY_ACTION 下发给当前页
+ *   PREV (KEY长按)    -> 切换到上一页
+ *   ACTION (BOOT短按) -> 语音空闲时 push-to-talk；否则 UI_KEY_ACTION 下发给当前页
  *   BACK (BOOT长按)   -> 语音活动时全局取消，否则 UI_KEY_BACK 下发给当前页
  *
  * 任务: ui_task, 栈4096, 优先级5 (登记于 docs/coding-standards.md 第7节)

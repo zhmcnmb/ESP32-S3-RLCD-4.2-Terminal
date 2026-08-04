@@ -11,7 +11,7 @@ extern "C" {
  * 依赖 board_init() 已完成(拿 board_btn_key_pressed()/board_btn_boot_pressed())。
  *
  * 语义:
- *   KEY 短按 -> NEXT；KEY 长按不发布
+ *   KEY 短按 -> NEXT；KEY 长按 -> PREV
  *   BOOT 短按 -> ACTION；BOOT 长按 -> BACK（上层按上下文解读为取消）
  * 手势只在按键释放(短按)或达到长按阈值(长按)时发布一次；长按成立后释放不再补发短按。
  *
@@ -20,6 +20,7 @@ extern "C" {
 
 typedef enum {
     INPUT_EVENT_NEXT,
+    INPUT_EVENT_PREV,
     INPUT_EVENT_ACTION,
     INPUT_EVENT_BACK,
 } input_event_t;

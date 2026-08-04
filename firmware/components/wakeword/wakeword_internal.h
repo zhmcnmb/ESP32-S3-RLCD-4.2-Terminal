@@ -34,7 +34,7 @@ typedef struct {
     model_iface_data_t *mn_data;
     TaskHandle_t volatile task; /* 检测任务退出前自清，wakeword_stop以此join */
     volatile bool running;
-    detect_state_t state;
+    volatile detect_state_t state;
     bool vad_was_active;
     int16_t *utterance_buf;
     size_t utterance_count;

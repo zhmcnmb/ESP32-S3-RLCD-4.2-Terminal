@@ -263,6 +263,23 @@ esp_err_t wakeword_stop(void)
     return ESP_OK;
 }
 
+esp_err_t wakeword_trigger(void)
+{
+    if (!g_wakeword_ctx.afe_data || !g_wakeword_ctx.running) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (g_wakeword_ctx.state != STATE_IDLE) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_LOGI(TAG, "手动触发录音");
+    if (g_wakeword_ctx.cb) {
+        g_wakeword_ctx.cb(WAKEWORD_EVENT_WAKE, g_wakeword_ctx.ctx);
+    }
+    g_wakeword_ctx.state = STATE_LISTENING;
+    g_wakeword_ctx.vad_was_active = false;
+    return ESP_OK;
+}
+
 esp_err_t wakeword_deinit(void)
 {
     if (!g_wakeword_ctx.afe_data) {
