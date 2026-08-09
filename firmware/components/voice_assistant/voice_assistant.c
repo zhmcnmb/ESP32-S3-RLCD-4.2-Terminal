@@ -173,8 +173,7 @@ static void finish_listening(void)
 {
     esp_err_t err = wakeword_stop();
     if (err != ESP_OK) {
-        /* 停不下来也必须收轮回IDLE，否则s_in_turn永真、状态机卡死LISTENING；
-         * finish_turn里的wakeword_start对残留任务有防重入守卫 */
+        /* 停不下来也必须收轮回IDLE，否则s_in_turn永真、状态机卡死LISTENING */
         ESP_LOGE(TAG, "监听停止失败: %s", esp_err_to_name(err));
         finish_turn(SYS_VOICE_ERROR, "监听停止失败");
         return;
@@ -195,7 +194,7 @@ static void finish_turn(sys_voice_phase_t phase, const char *reason)
         voice_alert(SYS_VOICE_IDLE, NULL);
         clear_cancel_flags();
     }
-    /* 清空处理期间积压的唤醒事件，再恢复检测 */
+    /* 清空处理期间积压的事件；PTT-only下管线保持停止，下一轮由按键重新拉起 */
     if (s_evt_queue) {
         wakeword_event_t drop;
         while (xQueueReceive(s_evt_queue, &drop, 0) == pdTRUE) {
@@ -203,15 +202,11 @@ static void finish_turn(sys_voice_phase_t phase, const char *reason)
     }
     s_busy = false;
     s_in_turn = false;
-    esp_err_t err = wakeword_start();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "finish_turn: wakeword_start 失败: %s", esp_err_to_name(err));
-    }
 }
 
 static void handle_speech_end(void)
 {
-    /* 立即停 mic 检测，保证所有出口都经 finish_turn 重启 wakeword */
+    /* 立即停录音管线，本轮后续(ASR/LLM/TTS)不再需要麦克风 */
     s_busy = true;
     esp_err_t err = wakeword_stop();
     if (err != ESP_OK) {
@@ -271,14 +266,14 @@ static void dispatch_wake_event(wakeword_event_t evt)
     switch (evt) {
     case WAKEWORD_EVENT_WAKE:
         if (s_in_turn) {
-            break; /* 上一轮未结束，忽略重复唤醒 */
+            break; /* 上一轮未结束，忽略重复触发 */
         }
         s_in_turn = true;
         s_turn_id++;
         voice_phase_set_turn(s_turn_id);
         clear_cancel_flags();
         voice_alert(SYS_VOICE_LISTENING, NULL);
-        ESP_LOGI(TAG, "turn %" PRIu32 " 唤醒", s_turn_id);
+        ESP_LOGI(TAG, "turn %" PRIu32 " 触发(PTT)", s_turn_id);
         s_listening_deadline_us = esp_timer_get_time() + (int64_t)LISTENING_TIMEOUT_MS * 1000;
         break;
     case WAKEWORD_EVENT_SPEECH_START:
@@ -314,17 +309,9 @@ static void voice_task(void *arg)
         vTaskDelete(NULL);
         return;
     }
-    err = wakeword_start();
-    if (err != ESP_OK) {
-        ESP_LOGE(TAG, "wakeword_start失败: %s", esp_err_to_name(err));
-        wakeword_deinit();
-        heap_caps_free(s_utt_buf);
-        s_utt_buf = NULL;
-        vTaskDelete(NULL);
-        return;
-    }
+    /* 无常驻监听：录音管线由PTT触发时才wakeword_start拉起，轮结束即停 */
     voice_alert(SYS_VOICE_IDLE, NULL);
-    ESP_LOGI(TAG, "就绪，等待唤醒词 | 栈余 %" PRIu32 "B",
+    ESP_LOGI(TAG, "就绪，按键说话 | 栈余 %" PRIu32 "B",
              (uint32_t)uxTaskGetStackHighWaterMark(NULL));
     wakeword_event_t evt;
     for (;;) {
@@ -343,9 +330,15 @@ static void voice_task(void *arg)
             dispatch_wake_event(evt);
         } else if (!s_busy && !s_in_turn) {
             if (sys_state_consume_voice_trigger()) {
-                /* push-to-talk: wakeword_trigger 投递 WAKE 到本队列,
-                 * 下一轮 dispatch_wake_event 接管, 与唤醒词路径完全一致 */
-                esp_err_t err = wakeword_trigger();
+                /* push-to-talk: 拉起录音管线再注入WAKE,
+                 * 下一轮 dispatch_wake_event 接管 */
+                esp_err_t err = wakeword_start();
+                if (err == ESP_OK) {
+                    err = wakeword_trigger();
+                    if (err != ESP_OK) {
+                        (void)wakeword_stop(); /* 触发失败不留空转任务 */
+                    }
+                }
                 if (err != ESP_OK) {
                     ESP_LOGW(TAG, "手动触发失败: %s", esp_err_to_name(err));
                 }

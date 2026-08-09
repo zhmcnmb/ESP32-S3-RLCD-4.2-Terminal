@@ -42,8 +42,8 @@ app_runtime                         启动顺序、注册、降级
 ### 3.1 语音与智能体
 
 ```text
-MultiNet 命令词“贾维斯”
-  -> AFE / VAD 录音
+BOOT 短按 PTT
+  -> AFE / VAD 录音(仅对话轮期间运行)
   -> SD WAV
   -> SiliconFlow ASR
   -> agent_runtime（最多 4 次模型往返、串行工具）
@@ -52,7 +52,7 @@ MultiNet 命令词“贾维斯”
 ```
 
 - `voice_assistant` 维护 `IDLE -> LISTENING -> TRANSCRIBING -> THINKING/EXECUTING -> SPEAKING -> IDLE`；异常和取消收敛回 `IDLE`。
-- MultiNet 命令词是当前“贾维斯”入口；KEY 短按下一页、长按上一页；BOOT 短按空闲时 push-to-talk、长按取消语音。
+- BOOT 短按是唯一语音入口（开放式唤醒词/MultiNet 已于 2026-08 下线，调研见 `docs/voice-agent-research.md`）；KEY 短按下一页、长按上一页；BOOT 短按空闲时 push-to-talk、长按取消语音。
 - 回复流在 TTS 前剥离 `*`、反引号、`#`、`_`；UTF-8 分块只提交完整字符前缀；PCM 分片始终按完整 `int16_t` 样本交付。
 - TTS 复用同一 host 的 TCP/TLS 连接；零 PCM 或陈旧连接会关闭并重连一次。异常、取消和半截响应都丢弃连接，避免污染下一句。
 - 传输层在每个上传分片和每轮读取前检查取消与 45 秒总预算；ASR 对非取消失败重试一次。
@@ -80,7 +80,7 @@ MultiNet 命令词“贾维斯”
 
 - 任务表持久化为 `agent/tasks/tasks.json`；无 SD 时保留 RAM，重启后丢失但不影响对话。
 - 时间不可信时不触发；一次任务过期少于 24 小时会补播，超过 24 小时丢弃；周期任务对齐到下一个周期，不补发历史周期。
-- 到期文本先投递给 `sys_state` 的单槽提醒邮箱；语音空闲后停止唤醒监听、播报“提醒：…”，无论成功、失败或取消都恢复监听。
+- 到期文本先投递给 `sys_state` 的单槽提醒邮箱；语音空闲后播报“提醒：…”（空闲时录音管线本就停止，无需抢占麦克风）。
 - `set_reminder` 与 `cancel_reminder` 只在用户明确表达提醒/定时意图时注册；`list_reminders` 是只读工具。
 
 ## 4. 配置与数据位置
@@ -94,13 +94,14 @@ MultiNet 命令词“贾维斯”
 
 - 音频与大缓冲显式放 PSRAM 或 DMA 能力内存；网络、SD、模型服务失败必须返回错误或降级，服务层不得 `ESP_ERROR_CHECK`。
 - 每 300 秒记录内部堆与 PSRAM 水位。天气在电池供电时降为 30 分钟轮询；USB 供电后自动恢复。
+- 语音无常驻监听与推理开销：录音管线（AFE/VAD、`wakeword` 任务）仅在 BOOT 短按 PTT 触发的对话轮期间运行，成功/失败/取消都即停。开放式唤醒词（MultiNet“贾维斯”）已于 2026-08 下线——ESP32 常驻唤醒做不到低功耗，且 MultiNet 常驻是反官方用法（调研见 `docs/voice-agent-research.md`）。
 - `memory_store_task`、`scheduler_task`、临时 TTS 任务的栈、优先级以 `coding-standards.md` 的任务表为准。
 
 ## 6. 当前阶段状态
 
 | 阶段 | 当前状态 | 已有证据 / 仍缺门槛 |
 |---|---|---|
-| P5.2 单轮语音闭环 | 核心完成 | MultiNet、音频、Wi-Fi、TLS、语音助手已多次启动；持续多轮、弱网与听感回归见第 7 节。 |
+| P5.2 单轮语音闭环 | 核心完成 | 音频、Wi-Fi、TLS、语音助手已多次启动；2026-08 起语音入口由唤醒词改为 BOOT 按键 PTT；持续多轮、弱网与听感回归见第 7 节。 |
 | P6.0 设备端 agent | 已实现 | 启动会恢复会话并注册本地工具；完整工具对话与跨重启会话回归待 SD 真机验收。 |
 | P6.1 Web / Skills | 已实现 | 启动可索引 Skill；Jina 凭据、联网搜索、CRC 篡改和拔卡回归待验收。 |
 | P6.2 记忆 M1 | 已实现 | 启动可恢复记忆并启动 `memory_store_task`；双槽、撕裂日志、tombstone 和连续写入待验收。 |

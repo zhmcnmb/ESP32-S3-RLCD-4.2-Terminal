@@ -5,8 +5,6 @@
 #include <stdint.h>
 
 #include "esp_afe_sr_iface.h"
-#include "esp_mn_iface.h"
-#include "esp_mn_models.h"
 #include "esp_afe_sr_models.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -16,8 +14,6 @@
 #define WAKEWORD_UTTERANCE_MAX_SECONDS 15
 #define WAKEWORD_UTTERANCE_MAX_SAMPLES \
     (WAKEWORD_UTTERANCE_MAX_SECONDS * AUDIO_PIPELINE_SAMPLE_RATE)
-#define WAKEWORD_MULTINET_DETECT_DURATION_MS 6000
-#define WAKEWORD_COMMAND_ID 0
 
 typedef enum {
     STATE_IDLE,
@@ -30,8 +26,6 @@ typedef struct {
     const esp_afe_sr_iface_t *afe_handle;
     esp_afe_sr_data_t *afe_data;
     srmodel_list_t *models;
-    const esp_mn_iface_t *multinet;
-    model_iface_data_t *mn_data;
     TaskHandle_t volatile task; /* 检测任务退出前自清，wakeword_stop以此join */
     volatile bool running;
     volatile detect_state_t state;

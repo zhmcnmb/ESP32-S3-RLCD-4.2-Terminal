@@ -1,6 +1,7 @@
 /*
- * wakeword_loop.c - AFE/MultiNet 检测任务与 VAD 语音段采集。
- * 将热循环收进独立文件，初始化和生命周期仍由 wakeword.c 管理。
+ * wakeword_loop.c - AFE/VAD 检测任务与语音段采集。
+ * 任务仅在PTT对话轮期间运行(wakeword_start/stop管理)，平时无常驻监听。
+ * 初始化和生命周期仍由 wakeword.c 管理。
  */
 #include "wakeword_internal.h"
 
@@ -56,38 +57,6 @@ static void finish_utterance(bool capped)
     g_wakeword_ctx.state = STATE_IDLE;
     g_wakeword_ctx.vad_was_active = false;
 }
-static void process_multinet(const afe_fetch_result_t *res)
-{
-    esp_mn_state_t state = g_wakeword_ctx.multinet->detect(g_wakeword_ctx.mn_data, res->data);
-    if (state == ESP_MN_STATE_TIMEOUT) {
-        g_wakeword_ctx.multinet->clean(g_wakeword_ctx.mn_data);
-        return;
-    }
-    if (state != ESP_MN_STATE_DETECTED) {
-        return;
-    }
-    esp_mn_results_t *result = g_wakeword_ctx.multinet->get_results(g_wakeword_ctx.mn_data);
-    int match_index = -1;
-    if (result) {
-        for (int i = 0; i < result->num; i++) {
-            if (result->command_id[i] == WAKEWORD_COMMAND_ID) {
-                match_index = i;
-                break;
-            }
-        }
-    }
-    float probability = match_index >= 0 ? result->prob[match_index] : 0.0f;
-    g_wakeword_ctx.multinet->clean(g_wakeword_ctx.mn_data);
-    if (match_index < 0 || g_wakeword_ctx.state != STATE_IDLE) {
-        return;
-    }
-    ESP_LOGI(TAG, "唤醒! 命令词=\"贾维斯\" prob=%.3f", probability);
-    if (g_wakeword_ctx.cb) {
-        g_wakeword_ctx.cb(WAKEWORD_EVENT_WAKE, g_wakeword_ctx.ctx);
-    }
-    g_wakeword_ctx.state = STATE_LISTENING;
-    g_wakeword_ctx.vad_was_active = false;
-}
 
 static void process_vad(const afe_fetch_result_t *res)
 {
@@ -139,8 +108,8 @@ void wakeword_task(void *arg)
     }
     ESP_LOGI(TAG, "检测任务启动: feed_chunk=%d ch=%d fetch_chunk=%d", feed_chunksize, feed_nch,
              g_wakeword_ctx.afe_handle->get_fetch_chunksize(g_wakeword_ctx.afe_data));
-    g_wakeword_ctx.state = STATE_IDLE;
-    g_wakeword_ctx.vad_was_active = false;
+    /* state/vad_was_active 由 wakeword_start 在创建本任务前复位，这里不重置，
+     * 否则会把start后紧接着trigger注入的LISTENING冲掉(PTT丢失) */
     while (g_wakeword_ctx.running) {
         size_t got = audio_pipeline_read(feed, frame_samples, 1000);
         if (got == 0) {
@@ -157,7 +126,6 @@ void wakeword_task(void *arg)
             ESP_LOGW(TAG, "fetch失败");
             continue;
         }
-        process_multinet(res);
         process_vad(res);
     }
     heap_caps_free(feed);

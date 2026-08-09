@@ -1,22 +1,16 @@
 /*
- * ESP-SR AFE(音频前端/VAD) + MultiNet(中文命令词识别) 实现
+ * ESP-SR AFE(降噪/VAD) 按键录音引擎
  *
- * 唤醒方案: mn5q8_cn 单命令词识别，持续监听命令词"贾维斯"(拼音 jia wei si)。
- * 官方WakeNet无"贾维斯"中文发音指纹模型(50+条目表核对过无匹配)，改用
- * MultiNet替代WakeNet作为唤醒网关——MultiNet设计给"唤醒后识别一句命令"用，
- * 非WakeNet那种为常驻监听调优的指纹模型，持续跑存在更高CPU/误唤醒风险，
- * 详见 docs/voice-agent-design.md 第9.4节的决策记录。
- * 触发方式: 说出"贾维斯"后唤醒，唤醒后VAD段落切分沿用原逻辑不变。
- * 模型加载: 通过 menuconfig 选择 CONFIG_SR_MN_CN_MULTINET5_RECOGNITION_QUANT8=y
- *           + CONFIG_CN_SPEECH_COMMAND_ID0="jia wei si"，
- *           idf.py flash 时自动烧录到 "model" 分区
+ * 触发方式: 无开放式唤醒词——BOOT短按PTT是唯一语音入口(2026-08起MultiNet
+ * 常驻唤醒下线, 调研与决策见 docs/voice-agent-research.md)。
+ * voice_assistant 消费PTT请求后先 wakeword_start() 拉起本组件任务, 再
+ * wakeword_trigger() 注入WAKE事件; 一轮结束 wakeword_stop() 完全停掉AFE
+ * 与任务——平时无常驻监听、无推理CPU开销。
+ * VAD段落切分: vad_min_noise_ms=2000ms, 一次按键能录完整句问题。
  *
- * AFE配置来源: esp-sr 官方 AFE 框架示例
+ * AFE配置来源: esp-skainet 官方 AFE 框架示例
  *   https://github.com/espressif/esp-skainet/blob/master/examples/wake_word_detection/afe/main/main.c
- * MultiNet持续监听模式来源: esp-skainet 官方中文命令词识别示例
- *   https://github.com/espressif/esp-skainet/blob/master/examples/cn_speech_commands_recognition/main/main.c
- *   (master, 2026-07-16，本组件去掉了官方示例里WakeNet先行门控的wakeup_flag，
- *   改为不经WakeNet门控、直接持续调用multinet->detect())
+ *   (master, 2026-07-16)
  */
 
 #include <stdlib.h>
@@ -29,9 +23,6 @@
 #include "esp_afe_config.h"
 #include "model_path.h"
 #include "esp_afe_sr_models.h"
-#include "esp_mn_iface.h"
-#include "esp_mn_models.h"
-#include "esp_process_sdkconfig.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 
@@ -49,14 +40,11 @@ wakeword_context_t g_wakeword_ctx;
  */
 static esp_err_t init_afe(void)
 {
-    /* 1. 加载模型分区 */
+    /* 1. 加载模型分区(AFE配置需要模型列表, VAD本身不用NN模型) */
     g_wakeword_ctx.models = esp_srmodel_init("model");
     if (!g_wakeword_ctx.models) {
-        ESP_LOGE(TAG, "模型分区加载失败，确认 menuconfig 已选命令词模型并重新烧录");
+        ESP_LOGE(TAG, "模型分区加载失败，确认已烧录 model 分区");
         return ESP_ERR_NOT_FOUND;
-    }
-    for (int i = 0; i < g_wakeword_ctx.models->num; i++) {
-        ESP_LOGI(TAG, "已加载模型: %s", g_wakeword_ctx.models->model_name[i]);
     }
 
     /* 2. 初始化AFE配置
@@ -75,11 +63,9 @@ static esp_err_t init_afe(void)
      * 和本组件的feed/fetch task若都挤CPU0，真机会把IDLE0饿死触发watchdog
      * (task_wdt报"CPU 0: wakeword")——AFE内部task和外部task统一挪到CPU1 */
     afe_config->afe_perferred_core = 1;
-    /* 唤醒词与问题之间的停顿默认1000ms就判语音结束，会把"贾维斯<停顿>问题"
-     * 切成两段、只录到唤醒词。放宽到2000ms，让一次唤醒能录完整句问题 */
+    /* 按键与问题之间的停顿默认1000ms就判语音结束，会把"<停顿>问题"
+     * 切成两段、只录到残句。放宽到2000ms，让一次按键能录完整句问题 */
     afe_config->vad_min_noise_ms = 2000;
-    /* 没有配置WakeNet模型(唤醒改由MultiNet负责)，afe_config->wakenet_model_name
-     * 恒为NULL，AFE Pipeline日志里不会再出现WakeNet阶段，这是预期行为 */
 
     /* 3. 创建AFE实例 */
     g_wakeword_ctx.afe_handle = esp_afe_handle_from_config(afe_config);
@@ -97,61 +83,6 @@ static esp_err_t init_afe(void)
     afe_config_free(afe_config);
 
     ESP_LOGI(TAG, "AFE初始化成功");
-    return ESP_OK;
-}
-
-/**
- * 初始化MultiNet命令词识别实例(替代WakeNet作为唤醒网关)
- *
- * 依赖 init_afe() 已把模型列表存进内部上下文。命令词从
- * CONFIG_CN_SPEECH_COMMAND_ID0(sdkconfig.defaults里配的"jia wei si")读取，
- * chunk size 必须和 AFE fetch chunk 一致——两者同源于AFE内部固定帧长设计，
- * 不一致说明模型/AFE配置不匹配，返回错误而不是带着错位数据继续跑。
- *
- * 来源: esp-skainet 官方中文命令词识别示例
- *   https://github.com/espressif/esp-skainet/blob/master/examples/cn_speech_commands_recognition/main/main.c
- *   (master, 2026-07-16)
- */
-static esp_err_t init_multinet(void)
-{
-    char *mn_name = esp_srmodel_filter(g_wakeword_ctx.models, ESP_MN_PREFIX, ESP_MN_CHINESE);
-    if (!mn_name) {
-        ESP_LOGE(TAG, "未找到中文MultiNet模型，确认 menuconfig 已选 mn5q8_cn");
-        return ESP_ERR_NOT_FOUND;
-    }
-    ESP_LOGI(TAG, "MultiNet模型: %s", mn_name);
-
-    g_wakeword_ctx.multinet = esp_mn_handle_from_name(mn_name);
-    if (!g_wakeword_ctx.multinet) {
-        ESP_LOGE(TAG, "获取MultiNet handle失败");
-        return ESP_FAIL;
-    }
-    g_wakeword_ctx.mn_data = g_wakeword_ctx.multinet->create(
-        mn_name, WAKEWORD_MULTINET_DETECT_DURATION_MS);
-    if (!g_wakeword_ctx.mn_data) {
-        ESP_LOGE(TAG, "创建MultiNet实例失败");
-        return ESP_FAIL;
-    }
-
-    esp_mn_error_t *err = esp_mn_commands_update_from_sdkconfig(g_wakeword_ctx.multinet, g_wakeword_ctx.mn_data);
-    if (err && err->num > 0) {
-        ESP_LOGE(TAG, "命令词解析失败: %d 条", err->num);
-        g_wakeword_ctx.multinet->destroy(g_wakeword_ctx.mn_data);
-        g_wakeword_ctx.mn_data = NULL;
-        return ESP_FAIL;
-    }
-
-    int mn_chunksize = g_wakeword_ctx.multinet->get_samp_chunksize(g_wakeword_ctx.mn_data);
-    int afe_chunksize = g_wakeword_ctx.afe_handle->get_fetch_chunksize(g_wakeword_ctx.afe_data);
-    if (mn_chunksize != afe_chunksize) {
-        ESP_LOGE(TAG, "MultiNet帧长(%d)与AFE帧长(%d)不一致", mn_chunksize, afe_chunksize);
-        g_wakeword_ctx.multinet->destroy(g_wakeword_ctx.mn_data);
-        g_wakeword_ctx.mn_data = NULL;
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    g_wakeword_ctx.multinet->print_active_speech_commands(g_wakeword_ctx.mn_data);
-    ESP_LOGI(TAG, "MultiNet初始化成功，持续监听命令词\"贾维斯\"");
     return ESP_OK;
 }
 
@@ -186,15 +117,8 @@ esp_err_t wakeword_init(wakeword_event_cb_t cb, void *ctx)
         memset(&g_wakeword_ctx, 0, sizeof(g_wakeword_ctx));
         return ret;
     }
-    ret = init_multinet();
-    if (ret != ESP_OK) {
-        g_wakeword_ctx.afe_handle->destroy(g_wakeword_ctx.afe_data);
-        esp_srmodel_deinit(g_wakeword_ctx.models);
-        memset(&g_wakeword_ctx, 0, sizeof(g_wakeword_ctx));
-        return ret;
-    }
 
-    ESP_LOGI(TAG, "初始化完成");
+    ESP_LOGI(TAG, "初始化完成(按键录音模式)");
     return ESP_OK;
 }
 
@@ -225,6 +149,10 @@ esp_err_t wakeword_start(void)
         return ESP_ERR_INVALID_STATE;
     }
 
+    /* 状态在创建任务前复位: 任务启动不再触碰state, 否则会把start后紧接着
+     * trigger注入的LISTENING冲掉(PTT丢失) */
+    g_wakeword_ctx.state = STATE_IDLE;
+    g_wakeword_ctx.vad_was_active = false;
     g_wakeword_ctx.running = true;
     /* 句柄字段直接作出参：内核在任务入就绪队列前写入，任务自清task后
      * 不会再被此处的旧句柄覆盖；失败时内核不写出参，需显式清NULL */
@@ -291,10 +219,6 @@ esp_err_t wakeword_deinit(void)
         return ESP_ERR_INVALID_STATE;
     }
 
-    /* 销毁MultiNet实例 */
-    if (g_wakeword_ctx.multinet && g_wakeword_ctx.mn_data) {
-        g_wakeword_ctx.multinet->destroy(g_wakeword_ctx.mn_data);
-    }
     /* 销毁AFE实例 */
     if (g_wakeword_ctx.afe_handle && g_wakeword_ctx.afe_data) {
         g_wakeword_ctx.afe_handle->destroy(g_wakeword_ctx.afe_data);
