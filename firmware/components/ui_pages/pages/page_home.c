@@ -14,10 +14,9 @@
  * 只读取 sys_state 快照，不直接访问传感器/电池/网络/SD(规范第6节)。
  *
  * 布局(400×300):
- *   页头        y=0..34    状态图标(无重复标题)
- *   时钟区      y=56..120  HH:MM 超大字 + 秒
- *   日期/校时   y=136..174 仅异常时显示"未校时"
- *   温湿度摘要  y=216..248 两列开放式指标
+ *   页头      y=0..34    状态图标(无重复标题)
+ *   时间卡片  y=44..176  HH:MM 超大字(冒号每秒闪烁) + 秒 + 日期
+ *   指标卡片  y=188..264 温湿度两列摘要
  */
 
 static const char *TAG = "page_home";
@@ -29,49 +28,57 @@ static void draw_time_section(const struct tm *t, const sys_state_snapshot_t *sn
 {
     char buf[16];
 
-    /* 时钟独占上半屏：大数字本身承担主视觉，不再放进卡片或取景框。 */
-    snprintf(buf, sizeof(buf), "%02d:%02d", t->tm_hour, t->tm_min);
+    ui_v2_draw_card(20, 44, 360, 132);
+
+    /* 冒号每秒闪烁：空格与冒号同宽，布局不抖动 */
+    snprintf(buf, sizeof(buf), "%02d%s%02d", t->tm_hour,
+             (t->tm_sec % 2) ? " " : ":", t->tm_min);
     st7305_draw_text(40, 56, 8, buf, true);
 
     snprintf(buf, sizeof(buf), "%02d", t->tm_sec);
-    st7305_draw_text(366, 104, 2, buf, true);
+    st7305_draw_text(340, 148, 2, buf, true);
 
     char date_buf[48];
     snprintf(date_buf, sizeof(date_buf), "%d月%d日 %s",
              t->tm_mon + 1, t->tm_mday, WEEKDAY_CN[t->tm_wday % 7]);
-    st7305_draw_utf8((400 - st7305_utf8_width(1, date_buf)) / 2, 136, 1, date_buf, true);
+    int date_w = st7305_utf8_width(1, date_buf);
+    int date_x = (400 - date_w) / 2;
+    st7305_draw_utf8(date_x, 140, 1, date_buf, true);
 
     if (!snap->time_valid) {
+        /* 未校时徽章跟在日期行尾，不另占一行 */
         const char *bad = "未校时";
         int bw = st7305_utf8_width(1, bad);
-        int bx = (400 - (bw + 16)) / 2;
-        st7305_fill_rect(bx, 156, bw + 16, 18, true);
-        st7305_draw_utf8(bx + 8, 157, 1, bad, false);
+        int bx = date_x + date_w + 12;
+        st7305_fill_rect(bx, 139, bw + 12, 18, true);
+        st7305_draw_utf8(bx + 6, 140, 1, bad, false);
     }
 }
 
-/* 图标承担指标语义，开放数值区保留给环境读数。 */
-static void draw_metric(int x, bool is_temp, bool ok, const char *value)
+/* 图标承担指标语义，组内实测宽度后以group_cx为心水平居中。 */
+static void draw_metric(int group_cx, bool is_temp, bool ok, const char *value)
 {
     const char *v = ok ? value : "--";
-    int value_x = x + (is_temp ? 22 : 20);
+    int vw = 32 * (int)strlen(v);
+    int total = 12 + 10 + vw + (ok ? 6 + (is_temp ? 27 : 22) : 0);
+    int x = group_cx - total / 2;
 
     if (is_temp) {
-        icon_thermometer(x, 220);
+        icon_thermometer(x, 213);
     } else {
-        icon_droplet(x, 220);
+        icon_droplet(x, 213);
     }
-    st7305_draw_text(value_x, 216, 4, v, true);
+    st7305_draw_text(x + 22, 206, 4, v, true);
 
     if (!ok) {
         return;
     }
 
-    int value_end = value_x + 32 * (int)strlen(v);
+    int value_end = x + 22 + vw;
     if (is_temp) {
-        ui_v2_draw_temp_unit(value_end + 8, 216);
+        ui_v2_draw_temp_unit(value_end + 6, 206);
     } else {
-        st7305_draw_text(value_end + 6, 232, 2, "%", true);
+        st7305_draw_text(value_end + 6, 222, 2, "%", true);
     }
 }
 
@@ -88,13 +95,13 @@ static void draw(void)
     localtime_r(&now, &t);
     draw_time_section(&t, &snap);
 
-    ui_v2_draw_dots_divider(196);
+    ui_v2_draw_card(20, 188, 360, 76);
 
     char temp_buf[16], hum_buf[16];
     snprintf(temp_buf, sizeof(temp_buf), "%.1f", snap.temperature);
     snprintf(hum_buf, sizeof(hum_buf), "%.0f", snap.humidity);
-    draw_metric(60, true, snap.env_ok, temp_buf);
-    draw_metric(268, false, snap.env_ok, hum_buf);
+    draw_metric(114, true, snap.env_ok, temp_buf);
+    draw_metric(290, false, snap.env_ok, hum_buf);
 
     esp_err_t err = st7305_flush();
     if (err != ESP_OK) {

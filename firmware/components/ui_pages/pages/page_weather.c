@@ -26,29 +26,36 @@ static void draw_weather_data(const sys_state_snapshot_t *snap)
 {
     char temp_buf[8];
     snprintf(temp_buf, sizeof(temp_buf), "%.0f", snap->weather_temperature);
-    st7305_draw_text(36, 68, 8, temp_buf, true);
-    int temp_w = 64 * (int)strlen(temp_buf);
-    ui_v2_draw_temp_unit(36 + temp_w + 10, 72);
 
-    icon_weather(288, 64, snap->weather_condition);
+    ui_v2_draw_card(20, 44, 360, 124);
+    st7305_draw_text(44, 64, 8, temp_buf, true);
+    int temp_w = 64 * (int)strlen(temp_buf);
+    ui_v2_draw_temp_unit(44 + temp_w + 10, 68);
+
+    icon_weather(292, 62, snap->weather_condition);
     int w2 = st7305_utf8_width(2, snap->weather_condition);
     if (w2 <= 160) {
-        st7305_draw_utf8(308 - w2 / 2, 116, 2, snap->weather_condition, true);
+        st7305_draw_utf8(312 - w2 / 2, 116, 2, snap->weather_condition, true);
     } else {
         int w1 = st7305_utf8_width(1, snap->weather_condition);
-        int x = 308 - w1 / 2;
-        st7305_draw_utf8(x > 210 ? x : 210, 122, 1, snap->weather_condition, true);
+        int x = 312 - w1 / 2;
+        st7305_draw_utf8(x > 216 ? x : 216, 122, 1, snap->weather_condition, true);
     }
 
-    ui_v2_draw_dots_divider(184);
+    ui_v2_draw_card(20, 180, 360, 72);
 
+    /* 两组摘要各占卡片一半，组内实测宽度后居中 */
     char humidity[8];
     snprintf(humidity, sizeof(humidity), "%d%%", snap->weather_humidity);
-    icon_droplet(60, 212);
-    st7305_draw_text(82, 208, 4, humidity, true);
+    int hum_w = 32 * (int)strlen(humidity);
+    int hx = 110 - (12 + 10 + hum_w) / 2;
+    icon_droplet(hx, 210);
+    st7305_draw_text(hx + 22, 202, 4, humidity, true);
 
-    icon_wind(230, 214);
-    st7305_draw_utf8(256, 214, 1, snap->weather_wind, true);
+    int wind_w = st7305_utf8_width(1, snap->weather_wind);
+    int wx = 290 - (18 + 8 + wind_w) / 2;
+    icon_wind(wx, 210);
+    st7305_draw_utf8(wx + 26, 210, 1, snap->weather_wind, true);
 }
 
 static void draw(void)

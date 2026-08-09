@@ -9,7 +9,8 @@
 /*
  * Jarvis 默认页：圆形双眼头像 + 极短状态。
  * 只读 sys_state 快照；全局语音取消由 ui_manager 提交。
- * 以最少几何区分相位，默认状态保持安静。
+ * 聆听呼吸环/思考轮转点/回答声波杠是每秒级绘制动画，待命每5秒眨眼一次；
+ * 动画只影响绘制帧，不触碰语音状态机。
  */
 
 static const char *TAG = "page_jarvis";
@@ -26,6 +27,8 @@ typedef struct {
 
 static jarvis_view_t s_view;
 static bool s_drawn;
+static int s_anim_tick;  /* on_tick秒计数，驱动动画帧 */
+static bool s_blinking;  /* 待命眨眼当帧标记 */
 
 /* 状态短文案：固定字面量，完整ASR/LLM文本不在此显示。ERROR 相位读取
  * sys_state 里 voice_assistant 写入的短原因(如"未听清")，没有则显示通用"故障" */
@@ -80,11 +83,20 @@ static void save_view(const sys_state_snapshot_t *snap)
 }
 
 /* 圆环是头像唯一轮廓，两个眼睛承担大部分状态表达，避免机械面甲抢占状态信息。 */
-static void draw_orb_ring(int cx, int cy)
+static void draw_orb_ring(int cx, int cy, sys_voice_phase_t phase)
 {
     const int radius = 72;
+    /* 双描边让轮廓在卡片里更挺 */
     st7305_draw_round_rect(cx - radius, cy - radius, 2 * radius + 1, 2 * radius + 1,
                             radius, true);
+    st7305_draw_round_rect(cx - radius + 1, cy - radius + 1, 2 * radius - 1, 2 * radius - 1,
+                            radius - 1, true);
+    if (phase == SYS_VOICE_LISTENING) {
+        /* 呼吸环：半径每秒在78/82间交替 */
+        int pulse = 78 + (s_anim_tick % 2) * 4;
+        st7305_draw_round_rect(cx - pulse, cy - pulse, 2 * pulse + 1, 2 * pulse + 1,
+                                pulse, true);
+    }
 }
 
 
@@ -119,6 +131,12 @@ static void draw_orb_eyes(int cx, int cy, sys_voice_phase_t phase, bool wifi_ok)
         st7305_draw_line(right_x + radius, eye_y - radius, right_x - radius, eye_y + radius, true);
         return;
     }
+    if (s_blinking && phase == SYS_VOICE_IDLE) {
+        /* 眨眼：一帧横缝 */
+        st7305_fill_rect(left_x - radius, eye_y - 1, 2 * radius + 1, 2, true);
+        st7305_fill_rect(right_x - radius, eye_y - 1, 2 * radius + 1, 2, true);
+        return;
+    }
 
     draw_filled_disc(left_x, eye_y, radius);
     draw_filled_disc(right_x, eye_y, radius);
@@ -146,16 +164,21 @@ static void draw_orb_phase_mark(int cx, int cy, sys_voice_phase_t phase)
     /* 聆听/转写相位靠眼睛尺寸与底部文字区分,嘴部留白避免碎点。 */
     switch (phase) {
     case SYS_VOICE_THINKING:
-        st7305_fill_rect(cx - 14, y, 4, 4, true);
-        st7305_fill_rect(cx - 2, y, 4, 4, true);
-        st7305_fill_rect(cx + 10, y, 4, 4, true);
+        /* 三点轮转点亮 */
+        for (int i = 0; i < 3; i++) {
+            int size = (i == s_anim_tick % 3) ? 6 : 4;
+            st7305_fill_rect(cx - 14 + i * 12, y + (6 - size) / 2, size, size, true);
+        }
         break;
     case SYS_VOICE_EXECUTING:
         st7305_draw_round_rect(cx - 14, y, 28, 6, 3, true);
         break;
     case SYS_VOICE_SPEAKING:
-        st7305_fill_rect(cx - 16, y + 1, 10, 3, true);
-        st7305_fill_rect(cx + 6, y + 1, 10, 3, true);
+        /* 三条声波杠，高度每秒交替 */
+        for (int i = 0; i < 3; i++) {
+            int h = ((i + s_anim_tick) % 2) ? 6 : 3;
+            st7305_fill_rect(cx - 16 + i * 12, y + 6 - h, 8, h, true);
+        }
         break;
     case SYS_VOICE_CONFIRM:
         st7305_draw_line(cx - 10, y + 2, cx - 2, y + 8, true);
@@ -168,7 +191,7 @@ static void draw_orb_phase_mark(int cx, int cy, sys_voice_phase_t phase)
 
 static void draw_avatar(int cx, int cy, sys_voice_phase_t phase, bool wifi_ok)
 {
-    draw_orb_ring(cx, cy);
+    draw_orb_ring(cx, cy, phase);
     draw_orb_eyes(cx, cy, phase, wifi_ok);
     if (phase == SYS_VOICE_IDLE && wifi_ok) {
         draw_orb_smile(cx, cy);
@@ -200,6 +223,8 @@ static void draw(const sys_state_snapshot_t *snap)
 static void on_enter(void)
 {
     s_drawn = false;
+    s_anim_tick = 0;
+    s_blinking = false;
     sys_state_snapshot_t snap;
     sys_state_get_snapshot(&snap);
     draw(&snap);
@@ -207,9 +232,27 @@ static void on_enter(void)
 
 static void on_tick(void)
 {
+    s_anim_tick++;
     sys_state_snapshot_t snap;
     sys_state_get_snapshot(&snap);
-    if (view_changed(&snap)) {
+
+    bool redraw = view_changed(&snap);
+    if (redraw) {
+        s_blinking = false;
+    } else if (snap.voice_phase == SYS_VOICE_LISTENING
+               || snap.voice_phase == SYS_VOICE_THINKING
+               || snap.voice_phase == SYS_VOICE_SPEAKING) {
+        redraw = true; /* 活跃相位逐秒动画 */
+    } else if (snap.voice_phase == SYS_VOICE_IDLE) {
+        if (!s_blinking && s_anim_tick % 5 == 0) {
+            s_blinking = true;  /* 每5秒眨一次 */
+            redraw = true;
+        } else if (s_blinking) {
+            s_blinking = false; /* 下一秒恢复睁眼 */
+            redraw = true;
+        }
+    }
+    if (redraw) {
         draw(&snap);
     }
 }

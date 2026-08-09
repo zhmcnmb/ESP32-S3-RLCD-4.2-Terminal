@@ -28,3 +28,7 @@ bridge/.venv/
 
 # Oh My Pi 会话导出
 omp-session-*.html
+
+# 临时文件与工具缓存
+tmp/
+.reasonix/

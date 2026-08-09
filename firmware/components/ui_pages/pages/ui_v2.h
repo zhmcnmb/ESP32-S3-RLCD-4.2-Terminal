@@ -4,7 +4,7 @@
 
 /*
  * 页面共享绘图原语：只保留被两个以上页面复用的小工具。
- * 页头有稳定的设备状态锚点；内容布局不强行套进统一取景框。
+ * 页头有稳定的设备状态锚点；内容区以圆角卡片分组。
  */
 
 /* 页头：可选左侧标题与右侧 SD/WiFi/电池图标。没有水平分隔线，留白由
@@ -15,8 +15,8 @@ void ui_v2_draw_header(const char *title, const sys_state_snapshot_t *snap);
  * secondary 可传 NULL；正常成功状态不要调用本函数 */
 void ui_v2_draw_empty_state(int y, const char *primary, const char *secondary);
 
-/* 点状分隔符：三个3×3方点，水平居中，用于分隔页面上下内容区。 */
-void ui_v2_draw_dots_divider(int y);
+/* 卡片：圆角边框(radius 12)，把相关内容聚成一块。只画边框，内容由页面自绘。 */
+void ui_v2_draw_card(int x, int y, int w, int h);
 
 /* 摄氏单位：8×8圆环加放大C，返回绘制后的x坐标。 */
 int ui_v2_draw_temp_unit(int x, int y);
