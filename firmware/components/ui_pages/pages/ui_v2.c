@@ -4,8 +4,7 @@
 #include "ui_icons.h"
 #define MARGIN 20
 
-/* 共享页头只保留身份与设备状态，内容区由每页自己组织；不再用整屏
- * 边框和分隔线把所有页面压成同一套仪表盘。 */
+/* 共享页头只保留身份与设备状态；内容区各页用圆角卡片分组组织。 */
 
 void ui_v2_draw_header(const char *title, const sys_state_snapshot_t *snap)
 {
@@ -33,11 +32,9 @@ void ui_v2_draw_empty_state(int y, const char *primary, const char *secondary)
     }
 }
 
-void ui_v2_draw_dots_divider(int y)
+void ui_v2_draw_card(int x, int y, int w, int h)
 {
-    st7305_fill_rect(186, y, 3, 3, true);
-    st7305_fill_rect(198, y, 3, 3, true);
-    st7305_fill_rect(210, y, 3, 3, true);
+    st7305_draw_round_rect(x, y, w, h, 12, true);
 }
 
 int ui_v2_draw_temp_unit(int x, int y)

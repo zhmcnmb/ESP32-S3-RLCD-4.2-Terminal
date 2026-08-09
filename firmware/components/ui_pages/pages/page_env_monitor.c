@@ -9,7 +9,7 @@
 #include "ui_v2.h"
 
 /*
- * 环境趋势页：当前读数并入各自趋势带表头，折线保留一小时时间方向。
+ * 环境趋势页：两条趋势卡片，当前读数并入各自卡片头部，折线保留一小时时间方向。
  * 页面只读取 sys_state 快照(env_history)，不直接依赖 env_logger(规范第6节)。
  */
 
@@ -32,9 +32,9 @@ static void draw_time_label(int x, int y, time_t timestamp)
 static int draw_band_badge(int y, const char *label)
 {
     int label_w = st7305_utf8_width(1, label);
-    st7305_fill_rect(20, y, label_w + 16, 18, true);
-    st7305_draw_utf8(28, y + 1, 1, label, false);
-    return 20 + label_w + 16;
+    st7305_fill_rect(32, y + 8, label_w + 16, 18, true);
+    st7305_draw_utf8(40, y + 9, 1, label, false);
+    return 32 + label_w + 16;
 }
 
 static void draw_band_header(int y, int badge_end,
@@ -48,24 +48,25 @@ static void draw_band_header(int y, int badge_end,
     }
 
     int value_x = badge_end + 14;
-    st7305_draw_text(value_x, y - 3, 3, value, true);
+    st7305_draw_text(value_x, y + 5, 3, value, true);
     int value_end = value_x + 24 * (int)strlen(value);
     if (is_temp) {
-        ui_v2_draw_temp_unit(value_end + 6, y);
+        ui_v2_draw_temp_unit(value_end + 6, y + 8);
     } else {
-        st7305_draw_text(value_end + 6, y + 5, 2, "%", true);
+        st7305_draw_text(value_end + 6, y + 13, 2, "%", true);
     }
 }
 
-/* 趋势带把量程置于折线右侧，给高一些的折线区保留完整观察空间。 */
+/* 趋势卡片把量程置于折线右侧，给高一些的折线区保留完整观察空间。 */
 static void draw_trend_band(int y, const char *label,
                             const sys_state_env_sample_t *samples, int n, bool is_temp)
 {
+    ui_v2_draw_card(20, y, 360, 116);
     int badge_end = draw_band_badge(y, label);
     if (n < 2) {
         char msg[32];
         snprintf(msg, sizeof(msg), "正在积累 %d/2", n);
-        st7305_draw_utf8(badge_end + 14, y + 1, 1, msg, true);
+        st7305_draw_utf8(badge_end + 14, y + 9, 1, msg, true);
         return;
     }
     draw_band_header(y, badge_end, &samples[n - 1], is_temp);
@@ -84,11 +85,14 @@ static void draw_trend_band(int y, const char *label,
 
     char range[16];
     snprintf(range, sizeof(range), "%.1f", max_v);
-    st7305_draw_text(380 - 8 * (int)strlen(range), y + 24, 1, range, true);
+    st7305_draw_text(368 - 8 * (int)strlen(range), y + 34, 1, range, true);
     snprintf(range, sizeof(range), "%.1f", min_v);
-    st7305_draw_text(380 - 8 * (int)strlen(range), y + 72, 1, range, true);
+    st7305_draw_text(368 - 8 * (int)strlen(range), y + 82, 1, range, true);
 
-    const int plot_x = 20, plot_w = 300, plot_y = y + 26, plot_h = 56;
+    const int plot_x = 40, plot_w = 288, plot_y = y + 34, plot_h = 56;
+    for (int px = plot_x; px < plot_x + plot_w; px += 4) {
+        st7305_set_pixel(px, plot_y + plot_h / 2, true); /* 中值参考虚线 */
+    }
     int prev_x = plot_x;
     int prev_y = plot_y;
     for (int i = 0; i < n; i++) {
@@ -98,6 +102,7 @@ static void draw_trend_band(int y, const char *label,
                  (int)((value - min_v) / (max_v - min_v) * (plot_h - 1));
         if (i > 0) {
             st7305_draw_line(prev_x, prev_y, x, py, true);
+            st7305_draw_line(prev_x, prev_y + 1, x, py + 1, true); /* 2px笔画 */
         }
         prev_x = x;
         prev_y = py;
@@ -119,8 +124,8 @@ static void draw(void)
     ui_v2_draw_header("环境趋势", &snap);
 
     int n = snap.env_history_count;
-    draw_trend_band(48, "温度", snap.env_history, n, true);
-    draw_trend_band(176, "湿度", snap.env_history, n, false);
+    draw_trend_band(40, "温度", snap.env_history, n, true);
+    draw_trend_band(164, "湿度", snap.env_history, n, false);
 
     esp_err_t err = st7305_flush();
     if (err != ESP_OK) {
