@@ -2,6 +2,7 @@
 
 #include "display_st7305.h"
 #include "esp_log.h"
+#include "esp_random.h"
 #include "sys_state.h"
 #include "ui_pages.h"
 #include "ui_v2.h"
@@ -11,9 +12,27 @@
  * 只读 sys_state 快照；全局语音取消由 ui_manager 提交。
  * 聆听呼吸环/思考轮转点/回答声波杠是每秒级绘制动画，待命每5秒眨眼一次；
  * 动画只影响绘制帧，不触碰语音状态机。
+ * 待命无状态文案时底部轮播一句诗，进入页面随机选、每60秒换一句。
  */
 
 static const char *TAG = "page_jarvis";
+
+/* 诗句表：源码字面量会被 gen_font.py 自动收进字库，单句含标点不超17字。 */
+static const char *const s_poems[] = {
+    "床前明月光，疑是地上霜。",
+    "春眠不觉晓，处处闻啼鸟。",
+    "白日依山尽，黄河入海流。",
+    "欲穷千里目，更上一层楼。",
+    "海内存知己，天涯若比邻。",
+    "会当凌绝顶，一览众山小。",
+    "明月松间照，清泉石上流。",
+    "行到水穷处，坐看云起时。",
+    "采菊东篱下，悠然见南山。",
+    "野火烧不尽，春风吹又生。",
+    "山重水复疑无路，柳暗花明又一村。",
+    "长风破浪会有时，直挂云帆济沧海。",
+};
+#define POEM_COUNT ((int)(sizeof(s_poems) / sizeof(s_poems[0])))
 
 typedef struct {
     sys_voice_phase_t phase;
@@ -29,6 +48,16 @@ static jarvis_view_t s_view;
 static bool s_drawn;
 static int s_anim_tick;  /* on_tick秒计数，驱动动画帧 */
 static bool s_blinking;  /* 待命眨眼当帧标记 */
+static int s_poem_idx;   /* 当前诗句索引 */
+
+static int next_poem_idx(void)
+{
+    int idx;
+    do {
+        idx = (int)(esp_random() % (uint32_t)POEM_COUNT);
+    } while (idx == s_poem_idx);
+    return idx;
+}
 
 /* 状态短文案：固定字面量，完整ASR/LLM文本不在此显示。ERROR 相位读取
  * sys_state 里 voice_assistant 写入的短原因(如"未听清")，没有则显示通用"故障" */
@@ -209,6 +238,10 @@ static void draw(const sys_state_snapshot_t *snap)
     const char *label = phase_label(snap);
     if (label) {
         st7305_draw_utf8((400 - st7305_utf8_width(2, label)) / 2, 258, 2, label, true);
+    } else {
+        /* 待命安静时轮播诗句，与状态文案同位互斥 */
+        const char *poem = s_poems[s_poem_idx];
+        st7305_draw_utf8((400 - st7305_utf8_width(1, poem)) / 2, 264, 1, poem, true);
     }
 
     esp_err_t err = st7305_flush();
@@ -225,6 +258,7 @@ static void on_enter(void)
     s_drawn = false;
     s_anim_tick = 0;
     s_blinking = false;
+    s_poem_idx = (int)(esp_random() % (uint32_t)POEM_COUNT);
     sys_state_snapshot_t snap;
     sys_state_get_snapshot(&snap);
     draw(&snap);
@@ -244,6 +278,10 @@ static void on_tick(void)
                || snap.voice_phase == SYS_VOICE_SPEAKING) {
         redraw = true; /* 活跃相位逐秒动画 */
     } else if (snap.voice_phase == SYS_VOICE_IDLE) {
+        if (s_anim_tick % 60 == 0) {
+            s_poem_idx = next_poem_idx(); /* 每60秒换一句诗 */
+            redraw = true;
+        }
         if (!s_blinking && s_anim_tick % 5 == 0) {
             s_blinking = true;  /* 每5秒眨一次 */
             redraw = true;
