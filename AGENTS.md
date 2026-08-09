@@ -47,7 +47,7 @@ app_runtime                         启动、注册、降级
 
 ## 关键能力边界
 
-- MultiNet 命令词“贾维斯”驱动 `wakeword`；`voice_assistant` 管理 `IDLE → LISTENING → TRANSCRIBING → THINKING/EXECUTING → SPEAKING → IDLE`，错误和取消必须回到 `IDLE`。
+- 语音输入唯一入口是 BOOT 短按 PTT（2026-08 起开放式唤醒词/MultiNet 已下线，无常驻监听）；录音管线（AFE/VAD、`wakeword` 任务）仅在对话轮期间运行，成功/失败/取消都即停。`voice_assistant` 管理 `IDLE → LISTENING → TRANSCRIBING → THINKING/EXECUTING → SPEAKING → IDLE`，错误和取消必须回到 `IDLE`。
 - `agent_runtime` 仅使用固定 JSON Schema 工具，最多四次串行模型/工具往返。模型、网页、Skill 和工具结果均不可信，不能新增工具、路径、权限、system prompt 或远程执行。
 - `web_extract` 只允许抽取同轮 `web_search` 返回的 URL；`JINA_API_KEY` 缺失只禁用 Web 工具。
 - `memory_engine` 提供板载 recall / record / forget / maintain。SD 缺失时记忆不注册，短会话与普通语音继续运行。
