@@ -43,7 +43,7 @@ app_runtime                 启动顺序、功能注册、降级策略
 | `input_manager` | 发布语义输入事件 | GPIO、消抖、长短按、上下文映射 |
 | `storage_sd` | append、stream read、list dir、atomic replace、checkpoint | FATFS、路径约束、串行写、掉电恢复 |
 | `cloud_transport` | 阻塞式 `get`(TLS+可选gzip自动解压)、流式 `post_stream`、有界 `post_json` | TLS、证书、gzip容器解析、总超时、取消、响应预算 |
-| `web_client` | search、extract | Jina认证、URL来源约束、SSRF检查、JSON解析、长度预算 |
+| `web_client` | search、extract | URL来源约束、SSRF检查、HTML解析、长度预算 |
 | `skill_manager` | init、catalog、load | SD目录、front matter、静态工具白名单、CRC32复核 |
 | `memory_engine` | recall、record、forget、maintain | 日志、索引、TTL、墓碑、压缩、重建 |
 
@@ -148,6 +148,7 @@ typedef struct {
 | input_task | 2048 | 4 | input_manager（30ms轮询KEY/BOOT，消抖+长短按判定） |
 | ui_task | 4096 | 5 | ui_manager（消费input_manager语义事件；无输入时1s周期tick） |
 | sys_state_task | 3072 | 2 | sys_state（10s轮询瞬时温湿度/电池/WiFi/SD状态，写入共享快照） |
+| text_console | 3072 | 2 | text_console（USB-Serial-JTAG RX 阻塞读一行文本，投 sys_state 文本邮箱；验收测试入口，无网络/文件IO） |
 | env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV，同步推送sys_state） |
 | weather_task | 8192 | 3 | weather_client（USB供电15分钟、仅电池30分钟直连QWeather，TLS+gzip+cJSON解析，经cloud_transport，推送sys_state） |
 | wakeword_task | 8192 | 5(CPU1) | wakeword（AFE feed+fetch合并task，MultiNet命令词+VAD检测+语音段缓冲；固定CPU1，避免与CPU0的WiFi/lwIP协议栈争抢触发watchdog——真机踩过CPU0饿死IDLE0的坑） |
@@ -156,6 +157,7 @@ typedef struct {
 | reply_tts_task | 6144 | 4(CPU0) | voice_assistant（TTS流式合成整句转发任务，voice_tts_stream.c；每轮临时创建，播完自行退出） |
 | memory_store_task | 4096 | 2 | memory_engine（热路径SD写收敛：8深度PSRAM有界队列+单任务串行落盘，避免agent任务被FATFS阻塞；失败仅告警，重启回放兜底） |
 | scheduler_task | 4096 | 3 | scheduler（每秒检查16条以内的提醒；经sys_state单槽邮箱投递，SD缺失时RAM降级） |
+| wifi_setup_task | 4096 | 3 | wifi_setup（100ms消费配网命令+推进状态机；扫描结果拷贝排序在任务上下文，SCAN_DONE事件回调仅notify） |
 | *(后续新增在此登记)* | | | |
 
 ## 8. 云端与持久化约定
@@ -170,7 +172,7 @@ typedef struct {
 
 ## 9. 密钥管理
 
-- WiFi 密码、和风天气 API Key、LLM token、Jina API Key **一律不进仓库**
+- WiFi 密码、和风天气 API Key、LLM token **一律不进仓库**
 - 开发期放 `firmware/main/secrets.h`（已在 `.gitignore` 里），提供 `secrets.h.example` 模板
 - 正式方案：存 NVS，通过配网写入
 

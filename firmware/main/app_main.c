@@ -7,12 +7,6 @@
 #include "esp_psram.h"
 #include "secrets.h"
 
-#ifdef JINA_API_KEY
-#define OPTIONAL_JINA_API_KEY JINA_API_KEY
-#else
-#define OPTIONAL_JINA_API_KEY ""
-#endif
-
 /* 启动编排(docs/coding-standards.md 第3节): 只做芯片诊断+调用app_runtime，
  * 具体初始化顺序/页面注册/联网/语音全部下沉到 app_runtime */
 
@@ -47,7 +41,6 @@ void app_main(void)
         .deepseek_api_key = DEEPSEEK_API_KEY,
         .deepseek_llm_url = "https://api.deepseek.com/v1/chat/completions",
         .use_deepseek_llm = false, /* 对话继续走SiliconFlow，不切到DeepSeek直连 */
-        .jina_api_key = OPTIONAL_JINA_API_KEY,
     };
     ESP_ERROR_CHECK(app_runtime_start(&cfg));
 }

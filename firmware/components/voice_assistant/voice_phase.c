@@ -16,8 +16,9 @@ static bool phase_transition_valid(sys_voice_phase_t from, sys_voice_phase_t to)
     }
     switch (from) {
     case SYS_VOICE_IDLE:
-        /* scheduler 可在没有用户轮次时直接播报提醒。 */
-        return to == SYS_VOICE_LISTENING || to == SYS_VOICE_SPEAKING;
+        /* scheduler 可在没有用户轮次时直接播报提醒；
+         * 串口文本注入的测试轮跳过 LISTENING/TRANSCRIBING 直接进 THINKING。 */
+        return to == SYS_VOICE_LISTENING || to == SYS_VOICE_SPEAKING || to == SYS_VOICE_THINKING;
     case SYS_VOICE_LISTENING:
         return to == SYS_VOICE_TRANSCRIBING || to == SYS_VOICE_IDLE || to == SYS_VOICE_ERROR;
     case SYS_VOICE_TRANSCRIBING:

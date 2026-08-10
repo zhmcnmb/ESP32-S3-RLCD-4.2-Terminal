@@ -102,6 +102,17 @@ esp_err_t cloud_transport_post_stream(const char *url, const char *auth_header_v
                                        const volatile bool *cancel_flag, int *out_status);
 
 /*
+ * 阻塞式流式HTTPS GET：响应体逐块交给on_chunk，不整体缓冲——搜索结果页等大HTML
+ * (几十~上百KB)塞不进 cloud_transport_get 的定长内部缓冲。header_name/header_value
+ * 可选(如User-Agent)。3xx 重定向最多跟随3次(含相对 Location)。
+ * out_status/cancel_flag/错误码语义与 cloud_transport_post_stream 一致。
+ */
+esp_err_t cloud_transport_get_stream(const char *url, const char *header_name,
+                                     const char *header_value,
+                                     cloud_transport_chunk_cb_t on_chunk, void *user_ctx,
+                                     const volatile bool *cancel_flag, int *out_status);
+
+/*
  * 持久连接的流式POST：同 host 连续多次 POST(如TTS一次回答的多个合成块)复用同一条
  * TLS连接，省去每块单独握手的耗时；服务端若中途主动断开连接，由调用方重试兜底
  * (关闭旧连接、重新open、原地重试一次)，本Interface不自动重连。

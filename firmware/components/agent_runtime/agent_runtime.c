@@ -8,11 +8,13 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "esp_heap_caps.h"
 #include "esp_log.h"
 #include "skill_manager.h"
 #include "memory_engine.h"
+#include "sys_state.h"
 #include "web_client.h"
 
 static const char *TAG = "agent_runtime";
@@ -127,11 +129,36 @@ static esp_err_t build_system_prompt(void)
     return err;
 }
 
+static const char *WEEKDAY_CN[] = { "星期日", "星期一", "星期二", "星期三",
+                                    "星期四", "星期五", "星期六" };
+
+/* 每轮注入当前本地时间(与时钟页同一份 sys_state 数据)，模型才能回答时间类问题 */
+static esp_err_t append_current_time(void)
+{
+    sys_state_snapshot_t snap;
+    sys_state_get_snapshot(&snap);
+    char line[72];
+    if (!snap.time_valid) {
+        strcpy(line, "\n设备时间尚未同步，无法得知当前时刻。");
+    } else {
+        struct tm t;
+        time_t now = snap.now;
+        localtime_r(&now, &t);
+        snprintf(line, sizeof(line), "\n当前本地时间：%04d-%02d-%02d %02d:%02d %s",
+                 t.tm_year + 1900, t.tm_mon + 1, t.tm_mday,
+                 t.tm_hour, t.tm_min, WEEKDAY_CN[t.tm_wday]);
+    }
+    ESP_LOGI(TAG, "时间注入:%s", line);
+    return agent_text_append(&s_turn_system, line, strlen(line));
+}
+
 static esp_err_t build_turn_system(const char *user_text)
 {
     agent_text_reset(&s_turn_system);
     esp_err_t err = agent_text_append(&s_turn_system, agent_text_c_str(&s_system_prompt),
                                       agent_text_len(&s_system_prompt));
+    if (err != ESP_OK) return err;
+    err = append_current_time();
     if (err != ESP_OK || !memory_engine_is_available()) return err;
     memory_context_t *context = heap_caps_calloc(1, sizeof(*context), MALLOC_CAP_SPIRAM);
     if (!context) {

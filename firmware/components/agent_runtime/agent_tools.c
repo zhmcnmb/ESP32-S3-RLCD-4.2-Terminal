@@ -255,7 +255,7 @@ static const llm_tool_def_t s_definitions[] = {
      .parameters_json = "{\"type\":\"object\",\"properties\":{},\"additionalProperties\":false}"},
     {.name = "web_search", .description = "搜索公开网页并返回带URL的精简来源。",
      .parameters_json = "{\"type\":\"object\",\"properties\":{\"query\":{\"type\":\"string\",\"maxLength\":192},\"max_results\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":5}},\"required\":[\"query\",\"max_results\"],\"additionalProperties\":false}"},
-    {.name = "web_extract", .description = "只抽取最近搜索返回的公开来源正文。",
+    {.name = "web_extract", .description = "只抓取最近搜索返回的公开来源正文。正文为去标签文本，开头可能含导航噪音，max_chars建议填8192。",
      .parameters_json = "{\"type\":\"object\",\"properties\":{\"url\":{\"type\":\"string\",\"maxLength\":255},\"max_chars\":{\"type\":\"integer\",\"minimum\":1,\"maximum\":8192}},\"required\":[\"url\",\"max_chars\"],\"additionalProperties\":false}"},
     {.name = "load_skill", .description = "按名称加载已校验的本地Skill指导文本。",
      .parameters_json = "{\"type\":\"object\",\"properties\":{\"name\":{\"type\":\"string\",\"maxLength\":32}},\"required\":[\"name\"],\"additionalProperties\":false}"},
