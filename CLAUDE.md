@@ -7,9 +7,9 @@
 
 Waveshare ESP32-S3-RLCD-4.2 的 ESP-IDF v6.0.2 固件，目标是设备端个人 Jarvis 智能体。设备是身份、状态、会话、记忆、任务和权限的唯一权威；云端只提供 ASR、LLM、TTS 与受限公开网络检索。
 
-- P5.2 单轮语音闭环核心已真机验证：MultiNet 命令词“贾维斯”→ 录音 → ASR → agent → 流式 TTS。
-- P6.0 agent、P6.1 Web / Skills、P6.2 记忆 M1、P6.3 提醒 M1 已实现；SD、Jina 和提醒的完整真机回归仍未完成，不能在发布说明中称为已完成。
-- 当前工作重心是四页 UI 的纯视觉重构：保留页面注册顺序、按键行为、`sys_state` 数据路径和所有降级逻辑。已移除 `page_quota`，剩余翻页页面为 jarvis / home / weather / env_monitor。
+- P5.2 单轮语音闭环核心已真机验证：BOOT 短按 PTT → 录音 → ASR → agent → 流式 TTS（2026-08 起开放式唤醒词已下线）。
+- P6.0 agent、P6.1 Web / Skills、P6.2 记忆 M1、P6.3 提醒 M1 已实现；免 Key Web 检索主链路（搜索/抽取）已验收，SD、Skill CRC 和提醒的完整真机回归仍未完成，不能在发布说明中称为已完成。
+- 五个翻页页面为 jarvis / home / weather / env_monitor / wifi；视觉改动只能调整排版和绘制，不得改变页面顺序、按键语义、`sys_state` 数据路径和降级逻辑。已移除 `page_quota`。
 
 ## 架构
 
@@ -24,14 +24,15 @@ app_runtime                         启动顺序、注册、降级
   |     +-- agent_runtime           消息、模型、固定工具循环、会话
   |           +-- skill_manager / memory_engine
   +-- scheduler                     一次与周期提醒
-  +-- 平台与能力模块                网络、SD、音频、显示、传感器、云传输
+  +-- wifi_setup                    按键配网状态机(扫描/列表/密码)，NVS凭据优先
+  +-- 平台与能力模块                网络、SD、音频、显示、传感器、云传输、text_console
         |
     board_rlcd42                    唯一引脚定义与总线初始化所有者
 ```
 
 - 跨模块异步状态只能经 `sys_state`；不得以可写全局变量、页面直读或临时 include 绕过。
-- 页面只读一次 `sys_state` 快照并渲染/提交命令；不得发 HTTP、读网络、传感器、电池、音频或 SD。`page_diag.c` 是未注册的旧式诊断页，不是范例。
-- `input_manager` 是物理按键唯一所有者。KEY 仅短按翻页；BOOT 仅用于真实确认或语音活动时的长按取消；PWR 不分配固件行为。
+- 页面只读一次 `sys_state` 快照并渲染/提交命令；不得发 HTTP、读网络、传感器、电池、音频或 SD。新页面实现 `ui_page_t` 并在 `ui_pages.h` 暴露 getter，由 `app_runtime` 注册。
+- `input_manager` 是物理按键唯一所有者。KEY 短按下一页、长按上一页；BOOT 短按空闲时 push-to-talk、长按取消；PWR 不分配固件行为。
 - `app_main.c` 只做芯片诊断与 `app_runtime_start()`；业务初始化、注册和降级归 `app_runtime`。
 
 ## 关键组件
@@ -42,7 +43,7 @@ app_runtime                         启动顺序、注册、降级
 | `llm_provider` | SiliconFlow / DeepSeek 的 SSE 与工具调用归一化。 |
 | `asr_client` / `tts_client` | SiliconFlow ASR 与 PCM 流式 TTS；TTS 复用连接并在陈旧连接时重连一次。 |
 | `agent_runtime` | 最多四轮串行模型/工具循环；工具 Schema 固定。 |
-| `web_client` / `skill_manager` | Jina 来源受限检索与 SD Skill 的白名单/CRC32 校验。 |
+| `web_client` / `skill_manager` | 免 Key Bing 搜索与白名单 URL 直连抓取，SD Skill 的白名单/CRC32 校验。 |
 | `memory_engine` | 板载 recall / record / forget / maintain；SD 不可用时独立降级。 |
 | `scheduler` | 最多 16 条一次或周期提醒；通过 `sys_state` 邮箱投递。 |
 | `storage_sd` | 受锁的追加、流式读、目录枚举和原子替换。 |
@@ -80,12 +81,12 @@ idf.py -p "$PORT" monitor
 - 所有 GPIO 宏只在 `board_rlcd42.h`；总线只由 `board_init()` 初始化。新增外设先更新引脚文档。
 - 音频、帧缓冲和其他大缓冲显式使用 `MALLOC_CAP_SPIRAM` 或 `MALLOC_CAP_DMA`；DMA 目标必须 DMA-capable。
 - 新 FreeRTOS 任务先登记 `coding-standards.md` 的任务表。事件回调不阻塞、不访问网络、不写文件、不等待锁；同一 I2C 设备的多步协议必须由互斥锁保护。
-- 密钥只放 `firmware/main/secrets.h`，不得提交。`JINA_API_KEY` 缺失只禁用 Web 工具；SD 缺失必须让短会话和普通语音继续运行。
-- UI 使用 400×300、1bpp ST7305；ASCII 字库仅覆盖 `0x20..0x5A`，超范围字符会显示空心框。正常状态保持安静，只为异常、确认和可恢复操作显示短文案。
+- 密钥只放 `firmware/main/secrets.h`，不得提交。Web 检索免 Key；SD 缺失必须让短会话和普通语音继续运行。
+- UI 使用 400×300、1bpp ST7305；ASCII 字库覆盖 `0x20..0x7A`（含小写），超范围字符会显示空心框。正常状态保持安静，只为异常、确认和可恢复操作显示短文案。
 - 摘取官方 demo 代码必须同步登记来源路径与 commit；寄存器序列和硬件魔数不可随意改写。
 
 ## 验收与交付
 
 构建通过不是验收。涉及行为的变更须烧录实测；天气还须确认 TLS 证书链校验日志。提交前按 `coding-standards.md` 清单检查依赖方向、任务登记、大小红线、密钥、Vendor 来源和真机证据。
 
-仍待完成的真机验收集中记录在 `docs/voice-agent-design.md` 第 7 节：多句 TTS/弱网回归、连续 20 轮语音、SD 记忆、Jina Web/Skill、提醒的创建/取消/重启/拔卡降级。
+仍待完成的真机验收集中记录在 `docs/voice-agent-design.md` 第 7 节：多句 TTS/弱网回归、连续 20 轮语音、SD 记忆、Skill CRC/拔卡、提醒的创建/取消/重启/拔卡降级。

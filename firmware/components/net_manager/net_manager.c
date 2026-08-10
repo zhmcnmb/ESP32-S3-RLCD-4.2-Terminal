@@ -9,6 +9,7 @@
 #include "esp_wifi.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
+#include "nvs.h"
 #include "nvs_flash.h"
 
 static const char *TAG = "net";
@@ -125,6 +126,15 @@ esp_err_t net_init(const char *ssid, const char *password)
         goto cleanup_events;
     }
 
+    /* 配网存进NVS的凭据优先于编译期凭据(secrets.h只作首次兜底) */
+    char nvs_ssid[33] = {0};
+    char nvs_pass[64] = {0};
+    if (net_credentials_load(nvs_ssid, sizeof(nvs_ssid), nvs_pass, sizeof(nvs_pass)) == ESP_OK) {
+        ssid = nvs_ssid;
+        password = nvs_pass;
+        ESP_LOGI(TAG, "使用NVS保存的凭据");
+    }
+
     err = wifi_start_sta(ssid, password);
     if (err != ESP_OK) {
         goto cleanup_timer;
@@ -159,4 +169,114 @@ esp_err_t net_wait_connected(int timeout_ms)
     EventBits_t bits = xEventGroupWaitBits(s_events, BIT_CONNECTED, pdFALSE, pdTRUE,
                                            pdMS_TO_TICKS(timeout_ms));
     return (bits & BIT_CONNECTED) ? ESP_OK : ESP_ERR_TIMEOUT;
+}
+
+#define NVS_NAMESPACE "net"
+#define NVS_KEY_SSID "ssid"
+#define NVS_KEY_PASS "pass"
+
+esp_err_t net_credentials_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
+{
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);
+    if (err != ESP_OK) {
+        return err; /* namespace不存在(从未配网)也在这里返回 */
+    }
+    err = nvs_get_str(handle, NVS_KEY_SSID, ssid, &ssid_len);
+    if (err == ESP_OK) {
+        err = nvs_get_str(handle, NVS_KEY_PASS, pass, &pass_len);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+esp_err_t net_credentials_save(const char *ssid, const char *pass)
+{
+    ESP_RETURN_ON_FALSE(ssid && pass, ESP_ERR_INVALID_ARG, TAG, "bad arg");
+
+    nvs_handle_t handle;
+    esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READWRITE, &handle);
+    if (err != ESP_OK) {
+        return err;
+    }
+    err = nvs_set_str(handle, NVS_KEY_SSID, ssid);
+    if (err == ESP_OK) {
+        err = nvs_set_str(handle, NVS_KEY_PASS, pass);
+    }
+    if (err == ESP_OK) {
+        err = nvs_commit(handle);
+    }
+    nvs_close(handle);
+    return err;
+}
+
+esp_err_t net_apply_credentials(const char *ssid, const char *pass)
+{
+    ESP_RETURN_ON_FALSE(ssid && pass, ESP_ERR_INVALID_ARG, TAG, "bad arg");
+    ESP_RETURN_ON_FALSE(strlen(ssid) < 33 && strlen(pass) < 64, ESP_ERR_INVALID_SIZE, TAG, "too long");
+
+    wifi_config_t wifi_cfg = { 0 };
+    strncpy((char *)wifi_cfg.sta.ssid, ssid, sizeof(wifi_cfg.sta.ssid) - 1);
+    strncpy((char *)wifi_cfg.sta.password, pass, sizeof(wifi_cfg.sta.password) - 1);
+
+    /* 清零重试计数并先设新凭据：随后DISCONNECTED事件回调会用新凭据立即重连 */
+    esp_timer_stop(s_retry_timer);
+    s_retry = 0;
+    s_state = NET_CONNECTING;
+    xEventGroupClearBits(s_events, BIT_CONNECTED);
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "set config");
+
+    esp_err_t err = esp_wifi_disconnect();
+    if (err == ESP_ERR_WIFI_NOT_CONNECT) {
+        /* 本来断开就不会有DISCONNECTED事件，自己发起连接 */
+        ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "connect");
+    } else if (err != ESP_OK) {
+        ESP_RETURN_ON_ERROR(err, TAG, "disconnect");
+    }
+    return ESP_OK;
+}
+
+esp_err_t net_get_current_ssid(char *buf, size_t buf_len)
+{
+    ESP_RETURN_ON_FALSE(buf && buf_len, ESP_ERR_INVALID_ARG, TAG, "bad arg");
+
+    wifi_config_t cfg;
+    ESP_RETURN_ON_ERROR(esp_wifi_get_config(WIFI_IF_STA, &cfg), TAG, "get config");
+    if (strlen((char *)cfg.sta.ssid) >= buf_len) {
+        return ESP_ERR_INVALID_SIZE;
+    }
+    strcpy(buf, (char *)cfg.sta.ssid);
+    return ESP_OK;
+}
+
+/* 配网切换前的旧配置快照，供配网失败后一键恢复，避免输错密码导致长期断网 */
+static wifi_config_t s_prev_config;
+static bool s_prev_valid = false;
+
+void net_credentials_snapshot(void)
+{
+    if (esp_wifi_get_config(WIFI_IF_STA, &s_prev_config) == ESP_OK) {
+        s_prev_valid = true;
+    }
+}
+
+esp_err_t net_credentials_restore(void)
+{
+    if (!s_prev_valid) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &s_prev_config), TAG, "restore config");
+    s_prev_valid = false;
+
+    esp_timer_stop(s_retry_timer);
+    s_retry = 0;
+    s_state = NET_CONNECTING;
+    xEventGroupClearBits(s_events, BIT_CONNECTED);
+    esp_err_t err = esp_wifi_disconnect();
+    if (err == ESP_ERR_WIFI_NOT_CONNECT) {
+        ESP_RETURN_ON_ERROR(esp_wifi_connect(), TAG, "reconnect");
+    } else if (err != ESP_OK) {
+        ESP_RETURN_ON_ERROR(err, TAG, "disconnect");
+    }
+    return ESP_OK;
 }

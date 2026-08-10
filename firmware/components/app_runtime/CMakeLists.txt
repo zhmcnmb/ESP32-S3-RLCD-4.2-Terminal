@@ -5,4 +5,4 @@ idf_component_register(SRCS "app_runtime.c"
                                      battery storage_sd env_logger
                                      weather_client input_manager sys_state scheduler
                                      llm_provider asr_client tts_client audio_pipeline web_client
-                                     agent_runtime voice_assistant esp_timer)
+                                     agent_runtime voice_assistant wifi_setup esp_timer text_console)

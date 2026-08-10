@@ -233,3 +233,94 @@ esp_err_t cloud_transport_post_json(const cloud_transport_json_request_t *reques
     *out_len = response.len;
     return err;
 }
+
+typedef struct {
+    char location[512]; /* 本轮响应的 Location 头，空串=无 */
+} redirect_ctx_t;
+
+static esp_err_t redirect_event_handler(esp_http_client_event_t *evt)
+{
+    redirect_ctx_t *ctx = evt->user_data;
+    if (ctx && evt->event_id == HTTP_EVENT_ON_HEADER
+        && strcasecmp(evt->header_key, "Location") == 0) {
+        strncpy(ctx->location, evt->header_value, sizeof(ctx->location) - 1);
+        ctx->location[sizeof(ctx->location) - 1] = '\0';
+    }
+    return ESP_OK;
+}
+
+/* Location 为相对路径("/...")时拼上当前URL的 scheme://host */
+static void resolve_redirect_url(const char *base, const char *location,
+                                 char *out, size_t out_size)
+{
+    if (location[0] != '/') {
+        strncpy(out, location, out_size - 1);
+        out[out_size - 1] = '\0';
+        return;
+    }
+    const char *host_end = strstr(base, "://");
+    host_end = host_end ? strchr(host_end + 3, '/') : NULL;
+    size_t origin = host_end ? (size_t)(host_end - base) : strlen(base);
+    if (origin >= out_size) origin = out_size - 1;
+    memcpy(out, base, origin);
+    strncpy(out + origin, location, out_size - 1 - origin);
+    out[out_size - 1] = '\0';
+}
+
+#define MAX_REDIRECTS 3
+
+esp_err_t cloud_transport_get_stream(const char *url, const char *header_name,
+                                     const char *header_value,
+                                     cloud_transport_chunk_cb_t on_chunk, void *user_ctx,
+                                     const volatile bool *cancel_flag, int *out_status)
+{
+    if (!url || !on_chunk) return ESP_ERR_INVALID_ARG;
+    if (out_status) *out_status = 0;
+    /* 不走 cloud_transport_client_create(固定POST)：GET 单独建句柄 */
+    redirect_ctx_t redir = { .location = {0} };
+    esp_http_client_config_t cfg = {
+        .url = url, .method = HTTP_METHOD_GET, .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = STREAM_TIMEOUT_MS,
+        .event_handler = redirect_event_handler, .user_data = &redir,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) return ESP_ERR_NO_MEM;
+    int64_t start_us = esp_timer_get_time();
+    esp_err_t err = ESP_OK;
+    if (header_name && header_value) {
+        err = esp_http_client_set_header(client, header_name, header_value);
+    }
+    char current[768];
+    strncpy(current, url, sizeof(current) - 1);
+    current[sizeof(current) - 1] = '\0';
+    for (int hop = 0; err == ESP_OK; hop++) {
+        redir.location[0] = '\0';
+        err = esp_http_client_open(client, 0);
+        if (err != ESP_OK) {
+            ESP_LOGW(TAG, "GET打开失败: %s", esp_err_to_name(err));
+            break;
+        }
+        err = stream_prepare_response(client, cancel_flag, start_us, out_status);
+        if (err == ESP_ERR_HTTP_CONNECT && *out_status >= 300 && *out_status < 400
+            && redir.location[0] && hop < MAX_REDIRECTS) {
+            /* 3xx：drain 后跟随 Location 重试同一句柄 */
+            (void)stream_read_loop(client, discard_chunk, NULL, cancel_flag, start_us);
+            esp_http_client_close(client);
+            resolve_redirect_url(current, redir.location, current, sizeof(current));
+            err = esp_http_client_set_url(client, current);
+            continue;
+        }
+        if (err == ESP_ERR_HTTP_CONNECT) {
+            /* 非2xx也要读到结尾，理由同 exec_request 的 drain */
+            esp_err_t drain_err = stream_read_loop(client, discard_chunk, NULL,
+                                                   cancel_flag, start_us);
+            err = drain_err == ESP_OK ? err : drain_err;
+        } else if (err == ESP_OK) {
+            err = stream_read_loop(client, on_chunk, user_ctx, cancel_flag, start_us);
+        }
+        break;
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+    return err;
+}

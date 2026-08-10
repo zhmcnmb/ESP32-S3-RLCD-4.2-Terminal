@@ -11,6 +11,28 @@
 #include <stdbool.h>
 
 #include "esp_err.h"
+#include "sys_state.h"
+
+/* ---- voice_assistant.c ↔ voice_text_turn.c 轮次共享原语 ---- */
+
+/* 新一轮开始：占位防重入、发轮次号、清取消标志；返回新轮次号 */
+uint32_t va_turn_next(void);
+uint32_t va_turn_id(void);
+volatile bool *va_turn_cancel_flag(void);
+
+/* 检查阶段结果：取消→IDLE，错误→ERROR(带原因)。返回 true 表示 turn 已结束 */
+bool va_stage_failed(esp_err_t err, const char *fail_reason);
+void va_finish_turn(sys_voice_phase_t phase, const char *reason);
+
+/* ---- voice_text_turn.c：agent 对话轮与串口文本注入测试轮 ---- */
+
+/* 跑一轮 agent(工具循环+流式TTS)；*out_streamed 表示回答是否已流式播出 */
+esp_err_t va_run_chat(const char *user_text, const char **reply, bool *out_streamed);
+
+/* 非流式回答整段播报；流式已由 delta 回调播过。返回 true 表示本轮已结束 */
+bool va_play_full_reply(const char *reply, bool streamed);
+
+void va_handle_text_turn(const char *text);
 
 /* asr_client 读取的固定录音路径，voice_assistant.c 和 voice_wav.c 共用 */
 #define WAV_REL_PATH "va_utt.wav"

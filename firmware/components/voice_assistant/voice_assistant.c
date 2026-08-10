@@ -1,7 +1,6 @@
 #include "voice_assistant.h"
 #include "voice_assistant_internal.h"
 #include <inttypes.h>
-#include "agent_runtime.h"
 #include "asr_client.h"
 #include "audio_pipeline.h"
 #include "esp_check.h"
@@ -23,7 +22,7 @@ static QueueHandle_t s_evt_queue;
 static uint32_t s_turn_id;
 static volatile bool s_cancel;
 static volatile bool s_busy;    /* 一轮 ASR/LLM/TTS 进行中，忽略新唤醒 */
-static volatile bool s_in_turn; /* 从 WAKE 到 finish_turn 期间为 true，防止重复唤醒 */
+static volatile bool s_in_turn; /* 从 WAKE 到 va_finish_turn 期间为 true，防止重复唤醒 */
 static int16_t *s_utt_buf;
 static esp_timer_handle_t s_cancel_timer;
 static int64_t s_listening_deadline_us;
@@ -57,28 +56,30 @@ static void cancel_timer_cb(void *arg)
     poll_cancel();
 }
 
-static void on_agent_tool_state(bool active, void *ctx)
+/* ---- voice_text_turn.c 共享的轮次原语 ---- */
+
+/* 新一轮开始：占位防重入、发轮次号、清取消标志；返回新轮次号 */
+uint32_t va_turn_next(void)
 {
-    (void)ctx;
-    /* 混合输出（先出文字再调工具）时播报已开始，工具状态不再影响 UI，
-     * 否则 SPEAKING->EXECUTING/THINKING 被状态机拒绝刷警告 */
-    if (voice_phase_get() == SYS_VOICE_SPEAKING) {
-        return;
-    }
-    voice_alert(active ? SYS_VOICE_EXECUTING : SYS_VOICE_THINKING, NULL);
+    s_in_turn = true;
+    s_busy = true;
+    s_turn_id++;
+    voice_phase_set_turn(s_turn_id);
+    clear_cancel_flags();
+    return s_turn_id;
 }
 
-static esp_err_t s_reply_stream_err;
-
-static void on_agent_reply_delta(const char *delta, void *ctx)
+uint32_t va_turn_id(void)
 {
-    (void)ctx;
-    voice_alert(SYS_VOICE_SPEAKING, NULL);
-    if (s_reply_stream_err == ESP_OK) {
-        s_reply_stream_err = va_reply_stream_push_delta(delta);
-    }
+    return s_turn_id;
 }
 
+volatile bool *va_turn_cancel_flag(void)
+{
+    return &s_cancel;
+}
+
+/* wakeword 事件回调只投递队列，处理全在 voice_task 上下文 */
 static void wakeword_cb(wakeword_event_t event, void *ctx)
 {
     (void)ctx;
@@ -98,39 +99,6 @@ static esp_err_t run_asr(char *out_text, size_t out_len)
     return err;
 }
 
-static esp_err_t run_chat(const char *user_text, const char **reply, bool *out_streamed)
-{
-    s_reply_stream_err = va_reply_stream_start(&s_cancel);
-    if (s_reply_stream_err != ESP_OK) return s_reply_stream_err;
-    voice_alert(SYS_VOICE_THINKING, NULL);
-    agent_runtime_turn_options_t options = {
-        .cancel_flag = &s_cancel,
-        .tool_state_cb = on_agent_tool_state,
-        .tool_state_ctx = NULL,
-        .reply_delta_cb = on_agent_reply_delta,
-        .reply_delta_ctx = NULL,
-    };
-    esp_err_t err = agent_runtime_run_turn(user_text, &options, reply);
-    esp_err_t stream_err = va_reply_stream_finish();
-    /* 45s总预算超时但已流出并播出部分内容：不再报"回答失败"覆盖已播报的语音——
-     * *reply此时可能为NULL(run_loop超时时未走到finish_reply)，末尾日志判空处理。 */
-    bool truncated = err == ESP_ERR_TIMEOUT && s_reply_stream_err == ESP_OK
-                     && stream_err == ESP_OK && va_reply_stream_has_content();
-    if (truncated) {
-        ESP_LOGW(TAG, "turn %" PRIu32 " 回答被截断: 已播出部分内容", s_turn_id);
-    } else if (err != ESP_OK) {
-        ESP_LOGW(TAG, "智能体失败: %s", esp_err_to_name(err));
-        return err;
-    } else if (s_reply_stream_err != ESP_OK || stream_err != ESP_OK) {
-        return s_reply_stream_err != ESP_OK ? s_reply_stream_err : stream_err;
-    }
-    *out_streamed = truncated ? true : va_reply_stream_has_content();
-    ESP_LOGI(TAG, "turn %" PRIu32 " LLM: %s", s_turn_id, *reply ? *reply : "(截断)");
-    return ESP_OK;
-}
-
-static void finish_turn(sys_voice_phase_t phase, const char *reason);
-
 /* 提醒仅在语音任务空闲时接手；音频独占和播报细节留在 voice_reminder.c。 */
 static void reminder_started(void)
 {
@@ -143,7 +111,7 @@ static void reminder_started(void)
 
 static void reminder_finished(void)
 {
-    finish_turn(SYS_VOICE_IDLE, NULL);
+    va_finish_turn(SYS_VOICE_IDLE, NULL);
 }
 
 static void play_pending_reminder(void)
@@ -152,15 +120,15 @@ static void play_pending_reminder(void)
 }
 
 /* 检查阶段结果：取消→IDLE，错误→ERROR(带原因)。返回 true 表示 turn 已结束 */
-static bool stage_failed(esp_err_t err, const char *fail_reason)
+bool va_stage_failed(esp_err_t err, const char *fail_reason)
 {
     poll_cancel();
     if (s_cancel || err == ESP_ERR_NOT_FINISHED) {
-        finish_turn(SYS_VOICE_IDLE, NULL);
+        va_finish_turn(SYS_VOICE_IDLE, NULL);
         return true;
     }
     if (err != ESP_OK) {
-        finish_turn(SYS_VOICE_ERROR, fail_reason);
+        va_finish_turn(SYS_VOICE_ERROR, fail_reason);
         return true;
     }
     return false;
@@ -175,13 +143,13 @@ static void finish_listening(void)
     if (err != ESP_OK) {
         /* 停不下来也必须收轮回IDLE，否则s_in_turn永真、状态机卡死LISTENING */
         ESP_LOGE(TAG, "监听停止失败: %s", esp_err_to_name(err));
-        finish_turn(SYS_VOICE_ERROR, "监听停止失败");
+        va_finish_turn(SYS_VOICE_ERROR, "监听停止失败");
         return;
     }
-    finish_turn(SYS_VOICE_IDLE, NULL);
+    va_finish_turn(SYS_VOICE_IDLE, NULL);
 }
 
-static void finish_turn(sys_voice_phase_t phase, const char *reason)
+void va_finish_turn(sys_voice_phase_t phase, const char *reason)
 {
     ESP_LOGI(TAG, "turn %" PRIu32 " 栈余 %uB", s_turn_id,
              (unsigned)(uxTaskGetStackHighWaterMark(NULL) * sizeof(StackType_t)));
@@ -210,18 +178,18 @@ static void handle_speech_end(void)
     s_busy = true;
     esp_err_t err = wakeword_stop();
     if (err != ESP_OK) {
-        finish_turn(SYS_VOICE_ERROR, "监听停止失败");
+        va_finish_turn(SYS_VOICE_ERROR, "监听停止失败");
         return;
     }
     poll_cancel();
     if (s_cancel) {
-        finish_turn(SYS_VOICE_IDLE, NULL);
+        va_finish_turn(SYS_VOICE_IDLE, NULL);
         return;
     }
     size_t n = wakeword_get_utterance(s_utt_buf, MAX_UTTERANCE_SAMPLES);
     if (n == 0) {
         ESP_LOGW(TAG, "turn %" PRIu32 " 录音为空", s_turn_id);
-        finish_turn(SYS_VOICE_IDLE, NULL);
+        va_finish_turn(SYS_VOICE_IDLE, NULL);
         return;
     }
     size_t trimmed = va_wav_trim_trailing_silence(s_utt_buf, n);
@@ -233,32 +201,24 @@ static void handle_speech_end(void)
     int32_t peak = va_wav_normalize_utterance(s_utt_buf, n);
     err = va_wav_save_utterance(s_utt_buf, n);
     if (err != ESP_OK) {
-        finish_turn(SYS_VOICE_ERROR, "录音失败");
+        va_finish_turn(SYS_VOICE_ERROR, "录音失败");
         return;
     }
     ESP_LOGI(TAG, "turn %" PRIu32 " WAV %u样本 峰值%d", s_turn_id, (unsigned)n, (int)peak);
     char asr_text[ASR_TEXT_MAX];
     err = run_asr(asr_text, sizeof(asr_text));
-    if (stage_failed(err, "识别失败")) return;
+    if (va_stage_failed(err, "识别失败")) return;
     if (asr_text[0] == '\0') {
-        finish_turn(SYS_VOICE_ERROR, "未听清");
+        va_finish_turn(SYS_VOICE_ERROR, "未听清");
         return;
     }
     ESP_LOGI(TAG, "turn %" PRIu32 " ASR: %s", s_turn_id, asr_text);
     const char *reply = NULL;
     bool streamed = false;
-    err = run_chat(asr_text, &reply, &streamed);
-    if (stage_failed(err, "回答失败")) return;
-    if (!streamed) {
-        if (!reply || !reply[0]) {
-            finish_turn(SYS_VOICE_ERROR, "回答失败");
-            return;
-        }
-        voice_alert(SYS_VOICE_SPEAKING, NULL);
-        err = va_tts_play_clean(reply, &s_cancel, NULL);
-        if (stage_failed(err, "播放失败")) return;
-    }
-    finish_turn(SYS_VOICE_IDLE, NULL);
+    err = va_run_chat(asr_text, &reply, &streamed);
+    if (va_stage_failed(err, "回答失败")) return;
+    if (va_play_full_reply(reply, streamed)) return;
+    va_finish_turn(SYS_VOICE_IDLE, NULL);
 }
 
 static void dispatch_wake_event(wakeword_event_t evt)
@@ -342,6 +302,11 @@ static void voice_task(void *arg)
                 if (err != ESP_OK) {
                     ESP_LOGW(TAG, "手动触发失败: %s", esp_err_to_name(err));
                 }
+                continue;
+            }
+            char text[ASR_TEXT_MAX];
+            if (sys_state_consume_text_turn(text, sizeof(text))) {
+                va_handle_text_turn(text);
                 continue;
             }
             play_pending_reminder();

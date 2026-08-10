@@ -23,12 +23,14 @@
 #include "scheduler.h"
 #include "storage_sd.h"
 #include "sys_state.h"
+#include "text_console.h"
 #include "time_service.h"
 #include "tts_client.h"
 #include "ui_manager.h"
 #include "ui_pages.h"
 #include "voice_assistant.h"
 #include "weather_client.h"
+#include "wifi_setup.h"
 
 static const char *TAG = "app_runtime";
 
@@ -95,6 +97,7 @@ static void start_network(const app_runtime_config_t *cfg)
         ESP_LOGW(TAG, "WiFi初始化失败: %s，离线运行", esp_err_to_name(err));
         return;
     }
+    log_if_failed(wifi_setup_init(), "WiFi配网组件启动");
 
     /* 先等WiFi真连上(最多15s)再启动轮询任务，避免首次请求抢在网络就绪前必然
      * 失败；超时也照常启动让任务自行重试。SNTP不受此限制，由on_wifi_connected触发 */
@@ -119,9 +122,8 @@ static void start_network(const app_runtime_config_t *cfg)
                                         cfg->siliconflow_llm_model, cfg->siliconflow_llm_url),
                       "LLM客户端启动(SiliconFlow)");
     }
-    if (cfg->jina_api_key && cfg->jina_api_key[0]) {
-        log_if_failed(web_client_init(cfg->jina_api_key), "网页客户端启动");
-    }
+    /* 免Key检索(Bing搜索+白名单URL直连抓取正文) */
+    log_if_failed(web_client_init(), "网页客户端启动");
 }
 esp_err_t app_runtime_start(const app_runtime_config_t *cfg)
 {
@@ -148,12 +150,14 @@ esp_err_t app_runtime_start(const app_runtime_config_t *cfg)
     ESP_RETURN_ON_ERROR(ui_manager_register_page(page_home_get()), TAG, "register home");
     ESP_RETURN_ON_ERROR(ui_manager_register_page(page_weather_get()), TAG, "register weather");
     ESP_RETURN_ON_ERROR(ui_manager_register_page(page_env_monitor_get()), TAG, "register env");
+    ESP_RETURN_ON_ERROR(ui_manager_register_page(page_wifi_get()), TAG, "register wifi");
     ESP_RETURN_ON_ERROR(ui_manager_start(), TAG, "ui_manager_start");
 
     start_network(cfg);
     log_if_failed(agent_runtime_init(), "个人智能体运行时启动");
     /* 云客户端和个人智能体就绪后再启动语音闭环；音频未就绪则只降级 */
     log_if_failed(voice_assistant_start(), "语音助手启动");
+    log_if_failed(text_console_init(), "串口文本控制台启动");
     ESP_LOGI(TAG, "启动完成 | 堆剩余 %" PRIu32 "B(历史最低%" PRIu32 "B) | PSRAM剩余%" PRIu32 "B(历史最低%" PRIu32 "B)",
              (uint32_t)esp_get_free_heap_size(), (uint32_t)esp_get_minimum_free_heap_size(),
              (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM),

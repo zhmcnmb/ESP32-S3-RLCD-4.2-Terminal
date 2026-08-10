@@ -55,6 +55,43 @@ typedef struct {
     float humidity;
 } sys_state_env_sample_t;
 
+/* WiFi配网(wifi_setup组件/page_wifi页)。视图整体推送避免11参数函数。 */
+#define SYS_WIFI_AP_MAX 12
+
+typedef enum {
+    SYS_WIFI_SETUP_OFF = 0, /* 配网未激活，页面仅显示连接状态 */
+    SYS_WIFI_SETUP_SCANNING,
+    SYS_WIFI_SETUP_AP_LIST,
+    SYS_WIFI_SETUP_PASSWORD,
+    SYS_WIFI_SETUP_CONNECTING,
+    SYS_WIFI_SETUP_FAILED, /* 连接失败，可重输密码或返回列表 */
+} sys_wifi_setup_state_t;
+
+typedef enum {
+    SYS_WIFI_CMD_NONE = 0,
+    SYS_WIFI_CMD_ENTER,   /* OFF -> 开始扫描 */
+    SYS_WIFI_CMD_NEXT,    /* 列表下移 / 候选字符后滚 */
+    SYS_WIFI_CMD_PREV,    /* 列表上移 / 候选字符前滚 */
+    SYS_WIFI_CMD_CONFIRM, /* 选中AP / 确认候选字符 / FAILED时重输 */
+    SYS_WIFI_CMD_BACK,    /* 密码删一位(0位返回列表) / 列表退出OFF / 扫描中止 */
+} sys_wifi_cmd_t;
+
+typedef struct {
+    char ssid[33];
+    int8_t rssi;
+} sys_wifi_ap_t;
+
+typedef struct {
+    sys_wifi_setup_state_t state;
+    char ssid[33];                      /* 当前连接或目标SSID */
+    sys_wifi_ap_t aps[SYS_WIFI_AP_MAX]; /* 扫描结果，按信号降序 */
+    int ap_count;
+    int ap_sel;                         /* 列表选中索引 */
+    char pwd[64];                       /* 已确认密码明文(仅内存，用于输入校验) */
+    int pwd_len;
+    int pwd_candidate;                  /* 候选索引，见 wifi_setup.h 字符集定义 */
+} sys_wifi_setup_view_t;
+
 typedef struct {
     /* 时间 */
     bool time_valid;
@@ -95,6 +132,9 @@ typedef struct {
     uint32_t voice_turn_id; /* 当前轮次，异步回调用它丢弃过期结果 */
     char voice_error[24];   /* ERROR 相位的短原因("识别失败"等)；非ERROR相位为空串 */
 
+    /* WiFi配网视图：wifi_setup 推送，page_wifi 只读 */
+    sys_wifi_setup_view_t wifi_setup;
+
     uint32_t version; /* 任意字段更新即递增，页面据此判断数据是否变化 */
 } sys_state_snapshot_t;
 
@@ -122,6 +162,13 @@ void sys_state_apply_weather(bool available, float temperature, int humidity,
  * phase==SYS_VOICE_ERROR 时展示，可传NULL(显示通用"故障")；其余相位忽略 */
 void sys_state_apply_voice(sys_voice_phase_t phase, uint32_t turn_id, const char *reason);
 
+/* wifi_setup 在状态机任一变化后整体推送视图 */
+void sys_state_apply_wifi_setup(const sys_wifi_setup_view_t *view);
+
+/* 页面投递配网命令(单槽邮箱，未消费时被新命令覆盖)；wifi_setup 任务轮询取走 */
+void sys_state_post_wifi_cmd(sys_wifi_cmd_t cmd);
+sys_wifi_cmd_t sys_state_consume_wifi_cmd(void);
+
 /* 页面提交取消请求；voice_assistant 轮询 consume 后清位 */
 void sys_state_request_voice_cancel(void);
 bool sys_state_consume_voice_cancel(void);
@@ -138,6 +185,13 @@ bool sys_state_reminder_pending(void);
 
 /* voice_assistant 空闲时取走一条提醒；无提醒或out不足容纳全文时返回false且不清槽。 */
 bool sys_state_consume_reminder(char *out, size_t out_len);
+
+/* 串口文本注入(验收测试入口)：text_console 读一行串口文本投递本邮箱，
+ * voice_assistant 空闲时取走，跳过录音/ASR、按完整 agent/TTS 链路处理。
+ * 单槽，占槽时 post 返回false；容量与 voice_assistant 的 ASR_TEXT_MAX 对齐。 */
+#define SYS_STATE_TEXT_TURN_MAX 512
+bool sys_state_post_text_turn(const char *text);
+bool sys_state_consume_text_turn(char *out, size_t out_len);
 
 #ifdef __cplusplus
 }

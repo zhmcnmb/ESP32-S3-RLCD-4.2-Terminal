@@ -1,6 +1,7 @@
 #pragma once
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "esp_err.h"
 
@@ -31,6 +32,21 @@ esp_err_t net_manager_register_connected_cb(net_connected_cb_t cb);
 
 /* 阻塞等待连接成功，timeout_ms后超时返回ESP_ERR_TIMEOUT */
 esp_err_t net_wait_connected(int timeout_ms);
+
+/* NVS凭据存储：配网成功后由wifi_setup保存，net_init优先于编译期凭据使用。
+ * 未存过返回ESP_ERR_NOT_FOUND，缓冲区按WiFi上限(SSID 33B/密码64B)准备。 */
+esp_err_t net_credentials_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
+esp_err_t net_credentials_save(const char *ssid, const char *pass);
+
+/* 运行时切换WiFi凭据并重新连接(重置重试计数，结果经net_get_state()观察) */
+esp_err_t net_apply_credentials(const char *ssid, const char *pass);
+
+/* 把当前STA配置里的SSID拷出(连接中/已连接均有效)，buf不足返回ESP_ERR_INVALID_SIZE */
+esp_err_t net_get_current_ssid(char *buf, size_t buf_len);
+
+/* 配网撤销：net_apply_credentials 前快照旧配置，失败后 net_credentials_restore 恢复 */
+void net_credentials_snapshot(void);
+esp_err_t net_credentials_restore(void);
 
 #ifdef __cplusplus
 }

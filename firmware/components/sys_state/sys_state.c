@@ -19,7 +19,9 @@ static sys_state_snapshot_t s_state;
 static SemaphoreHandle_t s_lock;
 static bool s_voice_cancel_req = false;
 static bool s_voice_trigger_req = false;
+static sys_wifi_cmd_t s_wifi_cmd = SYS_WIFI_CMD_NONE; /* NONE=空槽 */
 static char s_reminder[SYS_STATE_REMINDER_TEXT_MAX]; /* 空串=无待播报提醒 */
+static char s_text_turn[SYS_STATE_TEXT_TURN_MAX];    /* 空串=无待处理文本轮 */
 
 /* 所有apply_*()共用的收尾: 持锁写完字段后统一在这里递增版本号，
  * 避免每个apply函数各自记一遍，也不会漏掉 */
@@ -156,6 +158,39 @@ void sys_state_apply_voice(sys_voice_phase_t phase, uint32_t turn_id, const char
     xSemaphoreGive(s_lock);
 }
 
+void sys_state_apply_wifi_setup(const sys_wifi_setup_view_t *view)
+{
+    if (!s_lock || !view) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_state.wifi_setup = *view;
+    bump_version_locked();
+    xSemaphoreGive(s_lock);
+}
+
+void sys_state_post_wifi_cmd(sys_wifi_cmd_t cmd)
+{
+    if (!s_lock) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_wifi_cmd = cmd;
+    xSemaphoreGive(s_lock);
+}
+
+sys_wifi_cmd_t sys_state_consume_wifi_cmd(void)
+{
+    if (!s_lock) {
+        return SYS_WIFI_CMD_NONE;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    sys_wifi_cmd_t cmd = s_wifi_cmd;
+    s_wifi_cmd = SYS_WIFI_CMD_NONE;
+    xSemaphoreGive(s_lock);
+    return cmd;
+}
+
 void sys_state_request_voice_cancel(void)
 {
     if (!s_lock) {
@@ -230,6 +265,32 @@ bool sys_state_consume_reminder(char *out, size_t out_len)
     if (consumed) {
         memcpy(out, s_reminder, len + 1);
         s_reminder[0] = '\0';
+    }
+    xSemaphoreGive(s_lock);
+    return consumed;
+}
+
+bool sys_state_post_text_turn(const char *text)
+{
+    if (!s_lock || !text || !text[0]) return false;
+    size_t len = strlen(text);
+    if (len >= sizeof(s_text_turn)) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool accepted = s_text_turn[0] == '\0';
+    if (accepted) memcpy(s_text_turn, text, len + 1);
+    xSemaphoreGive(s_lock);
+    return accepted;
+}
+
+bool sys_state_consume_text_turn(char *out, size_t out_len)
+{
+    if (!s_lock || !out || out_len == 0) return false;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    size_t len = strlen(s_text_turn);
+    bool consumed = len > 0 && len < out_len;
+    if (consumed) {
+        memcpy(out, s_text_turn, len + 1);
+        s_text_turn[0] = '\0';
     }
     xSemaphoreGive(s_lock);
     return consumed;

@@ -29,13 +29,14 @@ app_runtime                         启动顺序、注册、降级
             +-- cloud_transport     TLS、GET、JSON、流 POST、取消、总超时
             +-- llm_provider        SiliconFlow / DeepSeek SSE
             +-- asr_client / tts_client
-            +-- web_client          Jina Search / Reader，来源约束
+            +-- web_client          免Key Bing搜索/直连抓取，来源约束
+            +-- text_console        串口文本注入(验收测试入口)
             +-- storage_sd / 网络 / 音频 / 传感器 / 显示
                   |
               board_rlcd42
 ```
 
-硬规则：页面不直接访问网络、音频或 SD；新增按键逻辑只进 `input_manager`；跨模块异步状态只经 `sys_state`；`board_rlcd42` 是唯一引脚与总线初始化所有者。`page_diag.c` 是未注册的旧式诊断页，不是新页面范例。
+硬规则：页面不直接访问网络、音频或 SD；新增按键逻辑只进 `input_manager`；跨模块异步状态只经 `sys_state`；`board_rlcd42` 是唯一引脚与总线初始化所有者。新页面实现 `ui_page_t` 并在 `ui_pages.h` 暴露 getter，由 `app_runtime` 注册。
 
 ## 3. 运行时能力
 
@@ -62,7 +63,8 @@ BOOT 短按 PTT
 `agent_runtime` 只暴露固定 JSON Schema 工具；模型、网页和 Skill 都是不可信输入，不能新增工具、路径或权限。
 
 - 常驻只读工具：设备状态、环境、缓存天气。
-- `web_search` / `web_extract` 仅在 `JINA_API_KEY` 已配置时注册。搜索最多 5 个来源；抽取 URL 必须来自最近一次成功搜索，拒绝本地地址、字面 IP、用户信息和非 HTTP(S) scheme。
+- 每轮 system 消息由固件注入当前本地时间（`sys_state.time_valid` 时，与时钟页同一数据源）；时间未同步时注入"时间未同步"说明，模型不得编造时刻。
+- `web_search` / `web_extract` 完全免 Key 常驻注册：Bing（cn.bing.com，GET + 字符串匹配解析）搜索 + 白名单 URL 直连抓取正文（去 script/style/标签后截断）。搜索最多 5 个来源；抽取 URL 必须来自最近一次成功搜索，拒绝本地地址、字面 IP、用户信息和非 HTTP(S) scheme。
 - Skill 位于 `agent/skills/<name>/SKILL.md`。front matter 只允许 `name`、`description`、`version`、`tools`、`content_crc32`；正文每次加载均复核 CRC32，工具必须是启动时的静态白名单子集。
 
 ### 3.3 长期记忆
@@ -86,7 +88,6 @@ BOOT 短按 PTT
 ## 4. 配置与数据位置
 
 - 本地凭据只放 `firmware/main/secrets.h`，模板是 `secrets.h.example`，不得提交密钥。
-- `JINA_API_KEY` 为空时只禁用 Web 工具。
 - 当前会话：`agent/sessions/current.jsonl`；无 SD 时退化为 RAM。
 - 改动固件显示字符串或 `tools/charset.txt` 后必须运行 `python3 tools/gen_font.py`，不要手改 `font_cn16.c`。
 
@@ -103,7 +104,7 @@ BOOT 短按 PTT
 |---|---|---|
 | P5.2 单轮语音闭环 | 核心完成 | 音频、Wi-Fi、TLS、语音助手已多次启动；2026-08 起语音入口由唤醒词改为 BOOT 按键 PTT；持续多轮、弱网与听感回归见第 7 节。 |
 | P6.0 设备端 agent | 已实现 | 启动会恢复会话并注册本地工具；完整工具对话与跨重启会话回归待 SD 真机验收。 |
-| P6.1 Web / Skills | 已实现 | 启动可索引 Skill；Jina 凭据、联网搜索、CRC 篡改和拔卡回归待验收。 |
+| P6.1 Web / Skills | 已实现 | 启动可索引 Skill；免 Key 搜索（Bing）与来源受限抽取已真机验收（2026-08-10，串口文本注入驱动）；Skill CRC 篡改和拔卡回归待验收。 |
 | P6.2 记忆 M1 | 已实现 | 启动可恢复记忆并启动 `memory_store_task`；双槽、撕裂日志、tombstone 和连续写入待验收。 |
 | P6.3 提醒 M1 | 已实现 | 启动可创建 `scheduler_task`；到点播报、取消、重启恢复和无 SD 降级待验收。 |
 
@@ -114,7 +115,7 @@ BOOT 短按 PTT
 1. 多句回复中验证 TTS TLS 复用、陈旧 keep-alive 重连、Markdown 听感和 UTF-8 边界；弱网下确认 ASR 重试后仍能完成轮次。
 2. 连续至少 20 轮语音，依据 `voice_assistant`、`tts_playback_task`、`reply_tts_task` 的高水位日志决定是否裁剪栈。
 3. SD 记忆：记住/召回、重启恢复、双槽截断回退、JSONL 撕裂末行、遗忘 tombstone、拔卡降级及连续五轮写入无卡顿。
-4. Web / Skill：配置 Jina Key 后执行搜索和来源受限抽取；验证 Skill CRC 篡改、拔卡和无 Jina Key 的独立降级。
+4. Web / Skill：免 Key 搜索与来源受限抽取已验收（2026-08-10，文本注入：多来源搜索、白名单抽取正文、无搜索时拒绝抽取）；仍待验证 Skill CRC 篡改和拔卡降级。
 5. 提醒：创建、到点播报、BOOT 长按取消、到期前重启、通话后补播、取消后不播以及拔 SD 后 RAM 降级。
 
 ## 8. 构建与发布
