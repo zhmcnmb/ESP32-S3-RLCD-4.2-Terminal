@@ -43,7 +43,7 @@ void sys_state_get_snapshot(sys_state_snapshot_t *out)
     out->now = time(NULL);
 }
 
-void sys_state_apply_env(bool ok, float temperature, float humidity, time_t updated_at)
+static void sys_state_apply_env(bool ok, float temperature, float humidity, time_t updated_at)
 {
     if (!s_lock) {
         return;
@@ -57,7 +57,7 @@ void sys_state_apply_env(bool ok, float temperature, float humidity, time_t upda
     xSemaphoreGive(s_lock);
 }
 
-void sys_state_apply_battery(bool ok, float voltage, int percent, bool charging)
+static void sys_state_apply_battery(bool ok, float voltage, int percent, bool charging)
 {
     if (!s_lock) {
         return;
@@ -71,7 +71,7 @@ void sys_state_apply_battery(bool ok, float voltage, int percent, bool charging)
     xSemaphoreGive(s_lock);
 }
 
-void sys_state_apply_wifi(bool connected)
+static void sys_state_apply_wifi(bool connected)
 {
     if (!s_lock) {
         return;
@@ -82,7 +82,7 @@ void sys_state_apply_wifi(bool connected)
     xSemaphoreGive(s_lock);
 }
 
-void sys_state_apply_sd(bool mounted)
+static void sys_state_apply_sd(bool mounted)
 {
     if (!s_lock) {
         return;

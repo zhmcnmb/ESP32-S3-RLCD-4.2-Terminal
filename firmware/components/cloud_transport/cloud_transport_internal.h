@@ -2,7 +2,7 @@
 
 /*
  * cloud_transport 组件内部头：仅供组件内部 .c 文件共享（不进 include/，不对外暴露）。
- * 声明"单次流式请求执行"的核心帮助函数——一次性路径(post_stream/post_json，见
+ * 声明"单次流式请求执行"的核心帮助函数——一次性路径(post_stream，见
  * cloud_transport_stream.c)和持久连接路径(cloud_transport_conn.c)共用同一份实现，
  * 区别只在于谁创建/关闭 esp_http_client 句柄。
  */

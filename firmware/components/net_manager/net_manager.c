@@ -101,6 +101,9 @@ static esp_err_t wifi_start_sta(const char *ssid, const char *password)
     return ESP_OK;
 }
 
+/* NVS保存的配网凭据读取，仅 net_init 使用 */
+static esp_err_t net_credentials_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
+
 esp_err_t net_init(const char *ssid, const char *password)
 {
     ESP_RETURN_ON_FALSE(ssid && password, ESP_ERR_INVALID_ARG, TAG, "bad arg");
@@ -175,7 +178,7 @@ esp_err_t net_wait_connected(int timeout_ms)
 #define NVS_KEY_SSID "ssid"
 #define NVS_KEY_PASS "pass"
 
-esp_err_t net_credentials_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
+static esp_err_t net_credentials_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len)
 {
     nvs_handle_t handle;
     esp_err_t err = nvs_open(NVS_NAMESPACE, NVS_READONLY, &handle);

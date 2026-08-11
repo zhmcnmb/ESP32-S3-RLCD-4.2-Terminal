@@ -17,7 +17,7 @@ extern "C" {
  * 卡未插入时 storage_sd_init() 返回错误但不影响系统运行——
  * SD卡是可选外设，调用方应降级处理而非中止启动。
  *
- * 持久化 Interface：append、stream read、size/list 元数据读取、atomic replace、checkpoint。
+ * 持久化 Interface：append、stream read、size/list 元数据读取、atomic replace。
  * 内部持一把互斥锁串行化所有文件操作，调用方不需要（也不应该）自己给 FATFS 访问加锁；
  * rel_path一律校验拒绝".."和绝对路径，防止越界写到挂载点之外。后续录音/会话/Skill/
  * 长期记忆(P6+)都通过这些操作访问SD，不再各自直接fopen。
@@ -25,19 +25,10 @@ extern "C" {
 
 #define STORAGE_SD_MOUNT_POINT "/sdcard"
 
-typedef struct {
-    uint64_t total_bytes;
-    uint64_t used_bytes;
-    char name[16];   /* 卡名 */
-} storage_sd_info_t;
-
 /* 挂载SD卡。未插卡/挂载失败返回错误 */
 esp_err_t storage_sd_init(void);
 
 bool storage_sd_is_mounted(void);
-
-/* 容量信息，未挂载时返回错误 */
-esp_err_t storage_sd_get_info(storage_sd_info_t *out);
 
 /* 追加一行文本到文件(自动加换行)。路径相对挂载点，如 "agent/sessions/current.jsonl"；
  * 缺失的父目录会在同一存储锁内自动创建。line必须指向RAM(栈/堆/.data)，不能是
@@ -66,12 +57,6 @@ esp_err_t storage_sd_list_dir(const char *rel_dir, storage_sd_dir_entry_cb_t on_
  * 全是0，不报错、不好排查(P5.0真机验证踩过)。调用方需要写flash常量时，
  * 先memcpy到堆/PSRAM缓冲区再传进来 */
 esp_err_t storage_sd_atomic_replace(const char *rel_path, const void *data, size_t len);
-
-/* 确保此前的写入已落盘。当前实现下append/atomic_replace每次调用都完整
- * open+write+close，返回时数据已经落盘，因此本函数当前是快速空操作；
- * 保留Interface是为了后续批量写入模式(如memory_engine攒够一批再关闭文件
- * 描述符)引入时，调用方不需要改代码——实现细节变化不影响这个Interface */
-esp_err_t storage_sd_checkpoint(void);
 
 #ifdef __cplusplus
 }

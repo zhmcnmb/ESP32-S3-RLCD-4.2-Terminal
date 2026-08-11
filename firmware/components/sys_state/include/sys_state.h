@@ -146,14 +146,9 @@ esp_err_t sys_state_init(void);
 /* 一次性一致读取全部字段(内部持锁拷贝，返回后 out 在锁外可安全使用) */
 void sys_state_get_snapshot(sys_state_snapshot_t *out);
 
-/* 以下均由对应Producer在一次采集后调用。env/battery在ok=false时数值字段填0
- * (页面对ok=false一律显示占位符"--"，不读具体数值)；weather在
+/* 以下均由对应Producer在一次采集后调用。weather在
  * available=false时由调用方决定传入0(从未成功过)还是上一次的缓存值(曾经
  * 成功过，临时不可达)，让页面能区分"从无数据"和"有旧数据可展示" */
-void sys_state_apply_env(bool ok, float temperature, float humidity, time_t updated_at);
-void sys_state_apply_battery(bool ok, float voltage, int percent, bool charging);
-void sys_state_apply_wifi(bool connected);
-void sys_state_apply_sd(bool mounted);
 void sys_state_apply_env_history(const sys_state_env_sample_t *samples, int count, uint32_t total);
 void sys_state_apply_weather(bool available, float temperature, int humidity,
                              const char *condition, const char *wind, time_t updated_at);

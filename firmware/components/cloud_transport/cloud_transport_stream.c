@@ -1,6 +1,6 @@
 /* cloud_transport_stream.c - 有取消、总超时和响应预算的 HTTPS POST。
  * 单次请求执行核心(cloud_transport_exec_request)供本文件的一次性路径
- * (post_stream/post_json)和 cloud_transport_conn.c 的持久连接路径共用。 */
+ * (post_stream)和 cloud_transport_conn.c 的持久连接路径共用。 */
 #include "cloud_transport.h"
 #include "cloud_transport_internal.h"
 
@@ -18,12 +18,6 @@ static const char *TAG = "cloud_transport";
 /* 目前所有云 Adapter 的 API Key 上限为 255B；另留 "Bearer " 前缀及结尾 NUL。 */
 #define STREAM_AUTH_HEADER_SIZE (sizeof("Bearer ") + 256)
 
-
-typedef struct {
-    char *buf;
-    size_t len;
-    size_t cap;
-} json_response_t;
 
 static esp_err_t stream_abort_reason(const volatile bool *cancel_flag, int64_t start_us)
 {
@@ -77,16 +71,6 @@ static esp_err_t stream_read_loop(esp_http_client_handle_t client, cloud_transpo
     }
     free(buf);
     return result;
-}
-
-static esp_err_t json_chunk(const char *data, size_t len, void *ctx)
-{
-    json_response_t *response = ctx;
-    if (len > response->cap - 1 - response->len) return ESP_ERR_INVALID_SIZE;
-    memcpy(response->buf + response->len, data, len);
-    response->len += len;
-    response->buf[response->len] = '\0';
-    return ESP_OK;
 }
 
 /* 非2xx响应也必须读到结尾，才能安全复用服务端声明 keep-alive 的连接。 */
@@ -212,26 +196,6 @@ esp_err_t cloud_transport_post_stream(const char *url, const char *auth_header_v
     if (out_status) *out_status = 0;
     return run_stream_request(url, auth_header_value, content_type, NULL, body, body_len,
                               on_chunk, user_ctx, cancel_flag, out_status);
-}
-
-esp_err_t cloud_transport_post_json(const cloud_transport_json_request_t *request,
-                                    size_t *out_len, int *out_status)
-{
-    if (!request || !request->url || !request->body || request->body_len == 0
-        || !request->response || request->response_size < 2 || !out_len) {
-        return ESP_ERR_INVALID_ARG;
-    }
-    if (out_status) *out_status = 0;
-    json_response_t response = {
-        .buf = request->response, .cap = request->response_size,
-    };
-    response.buf[0] = '\0';
-    esp_err_t err = run_stream_request(request->url, request->auth_header_value,
-                                       "application/json", "application/json",
-                                       request->body, request->body_len, json_chunk, &response,
-                                       request->cancel_flag, out_status);
-    *out_len = response.len;
-    return err;
 }
 
 typedef struct {

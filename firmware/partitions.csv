@@ -6,7 +6,5 @@
 nvs,        data, nvs,      0x9000,   0x6000,
 phy_init,   data, phy,      0xf000,   0x1000,
 factory,    app,  factory,  0x10000,  0x400000,
-# 语音模型分区(P5 ESP-SR用): WakeNet+MultiNet模型较大，提前预留
+# 语音模型分区(P5 ESP-SR用): AFE 模型，提前预留
 model,      data, spiffs,   0x410000, 0x800000,
-# 数据存储(日志/缓存/字库扩展)
-storage,    data, spiffs,   0xc10000, 0x3f0000,

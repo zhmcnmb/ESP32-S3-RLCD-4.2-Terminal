@@ -13,9 +13,6 @@ bool tts_contains_markdown(const char *text);
  * 返回写入字节数(<=len，不含结尾'\0'，调用方自行补)。 */
 size_t tts_strip_markdown(const char *src, size_t len, char *out);
 
-/* 返回首个完整句子的长度(含句末标点 \n . ! ? 及中文。！？)，无句末返回 0 */
-size_t tts_sentence_len(const char *text, size_t len);
-
 /* 合并缓冲内所有完整句子为一个合成块，减少逐句 HTTPS 往返停顿 */
 size_t tts_sentences_len(const char *text, size_t len);
 

@@ -70,7 +70,6 @@ bool memory_engine_is_available(void);
 esp_err_t memory_recall(const memory_query_t *query, memory_context_t *out);
 esp_err_t memory_record(const memory_event_t *event);
 esp_err_t memory_forget(memory_id_t id);
-esp_err_t memory_maintain(uint32_t budget_ms);
 
 #ifdef __cplusplus
 }

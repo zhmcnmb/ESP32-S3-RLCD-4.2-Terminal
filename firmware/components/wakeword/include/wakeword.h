@@ -55,8 +55,6 @@ esp_err_t wakeword_stop(void);
  * 并发时由 voice_assistant 的 s_in_turn 守卫保证只有一轮生效。 */
 esp_err_t wakeword_trigger(void);
 
-esp_err_t wakeword_deinit(void);
-
 #ifdef __cplusplus
 }
 #endif

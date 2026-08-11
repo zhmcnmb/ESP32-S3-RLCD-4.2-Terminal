@@ -16,10 +16,10 @@
 ## 功能规划
 
 1. ✅ 低功耗桌面时钟 + 天气显示（和风天气，P0-P3已完成并真机验证）
-2. 语音交互（唤醒词 + LLM对话 + 流式TTS，P5已完成并真机验证）
+2. ✅ 语音交互（按键PTT + LLM对话 + 流式TTS，P5已完成并真机验证）
 3. ✅ 环境监测记录（温湿度 + SD卡打点趋势，P2已完成并真机验证）
 
-完整分阶段路线图见 [`CLAUDE.md`](CLAUDE.md)。
+完整分阶段路线图见 [`docs/voice-agent-design.md`](docs/voice-agent-design.md)。
 
 ## 快速开始
 
@@ -35,5 +35,5 @@ idf.py build flash monitor
 ```
 ├── docs/           # 硬件引脚表、vendor代码来源记录、开发规范
 ├── firmware/       # ESP-IDF固件工程
-└── docs/           # 硬件引脚表、vendor代码来源记录、开发规范；原bridge/已随Claude用量页一并移除
+└── tools/          # 字库生成等开发工具
 ```
