@@ -36,7 +36,7 @@ void app_main(void)
         .qweather_api_host = QWEATHER_API_HOST,
         .qweather_location = QWEATHER_LOCATION,
         .siliconflow_api_key = SILICONFLOW_API_KEY,
-        .siliconflow_llm_model = "deepseek-ai/DeepSeek-V3",
+        .siliconflow_llm_model = "deepseek-ai/DeepSeek-V4-Flash",
         .siliconflow_llm_url = "https://api.siliconflow.cn/v1/chat/completions",
         .deepseek_api_key = DEEPSEEK_API_KEY,
         .deepseek_llm_url = "https://api.deepseek.com/v1/chat/completions",
