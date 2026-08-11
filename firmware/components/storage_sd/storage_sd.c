@@ -113,29 +113,6 @@ bool storage_sd_is_mounted(void)
     return s_card != NULL;
 }
 
-esp_err_t storage_sd_get_info(storage_sd_info_t *out)
-{
-    ESP_RETURN_ON_FALSE(out && s_card, ESP_ERR_INVALID_STATE, TAG, "未挂载");
-    xSemaphoreTake(s_lock, portMAX_DELAY);
-    FATFS *fs = NULL;
-    DWORD free_clusters = 0;
-    FRESULT res = f_getfree("0:", &free_clusters, &fs);
-    if (res != FR_OK) {
-        xSemaphoreGive(s_lock);
-        ESP_LOGE(TAG, "f_getfree失败: %d", res);
-        return ESP_FAIL;
-    }
-    uint64_t sector = fs->ssize;
-    uint64_t total = (uint64_t)(fs->n_fatent - 2) * fs->csize * sector;
-    uint64_t freesp = (uint64_t)free_clusters * fs->csize * sector;
-    out->total_bytes = total;
-    out->used_bytes = total - freesp;
-    strncpy(out->name, s_card->cid.name, sizeof(out->name) - 1);
-    out->name[sizeof(out->name) - 1] = '\0';
-    xSemaphoreGive(s_lock);
-    return ESP_OK;
-}
-
 esp_err_t storage_sd_append_line(const char *rel_path, const char *line)
 {
     ESP_RETURN_ON_FALSE(line && s_card && s_lock, ESP_ERR_INVALID_STATE, TAG, "未挂载或参数错");
@@ -295,11 +272,4 @@ esp_err_t storage_sd_atomic_replace(const char *rel_path, const void *data, size
         ESP_LOGW(TAG, "原子替换失败: %s", path);
     }
     return ret;
-}
-
-esp_err_t storage_sd_checkpoint(void)
-{
-    /* 当前所有写入(append/atomic_replace)都在同一次调用内完整open+write+close，
-     * 返回时数据已经落盘，这里没有额外待落盘状态可刷。见头文件注释 */
-    return ESP_OK;
 }

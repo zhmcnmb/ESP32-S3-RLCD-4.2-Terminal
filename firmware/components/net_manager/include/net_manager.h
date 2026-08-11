@@ -33,9 +33,7 @@ esp_err_t net_manager_register_connected_cb(net_connected_cb_t cb);
 /* 阻塞等待连接成功，timeout_ms后超时返回ESP_ERR_TIMEOUT */
 esp_err_t net_wait_connected(int timeout_ms);
 
-/* NVS凭据存储：配网成功后由wifi_setup保存，net_init优先于编译期凭据使用。
- * 未存过返回ESP_ERR_NOT_FOUND，缓冲区按WiFi上限(SSID 33B/密码64B)准备。 */
-esp_err_t net_credentials_load(char *ssid, size_t ssid_len, char *pass, size_t pass_len);
+/* NVS凭据存储：配网成功后由wifi_setup保存，net_init优先于编译期凭据使用。 */
 esp_err_t net_credentials_save(const char *ssid, const char *pass);
 
 /* 运行时切换WiFi凭据并重新连接(重置重试计数，结果经net_get_state()观察) */

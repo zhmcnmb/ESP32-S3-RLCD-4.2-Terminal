@@ -41,8 +41,8 @@ app_runtime                 启动顺序、功能注册、降级策略
 | `app_runtime` | 启动与功能注册 | 初始化顺序、注册、可选功能降级 |
 | `sys_state` | read snapshot、apply event、post command | 锁、事件循环、版本与订阅 |
 | `input_manager` | 发布语义输入事件 | GPIO、消抖、长短按、上下文映射 |
-| `storage_sd` | append、stream read、list dir、atomic replace、checkpoint | FATFS、路径约束、串行写、掉电恢复 |
-| `cloud_transport` | 阻塞式 `get`(TLS+可选gzip自动解压)、流式 `post_stream`、有界 `post_json` | TLS、证书、gzip容器解析、总超时、取消、响应预算 |
+| `storage_sd` | append、stream read、list dir、atomic replace | FATFS、路径约束、串行写、掉电恢复 |
+| `cloud_transport` | 阻塞式 `get`(TLS+可选gzip自动解压)、流式 `post_stream` | TLS、证书、gzip容器解析、总超时、取消、响应预算 |
 | `web_client` | search、extract | URL来源约束、SSRF检查、HTML解析、长度预算 |
 | `skill_manager` | init、catalog、load | SD目录、front matter、静态工具白名单、CRC32复核 |
 | `memory_engine` | recall、record、forget、maintain | 日志、索引、TTL、墓碑、压缩、重建 |
@@ -151,7 +151,7 @@ typedef struct {
 | text_console | 3072 | 2 | text_console（USB-Serial-JTAG RX 阻塞读一行文本，投 sys_state 文本邮箱；验收测试入口，无网络/文件IO） |
 | env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV，同步推送sys_state） |
 | weather_task | 8192 | 3 | weather_client（USB供电15分钟、仅电池30分钟直连QWeather，TLS+gzip+cJSON解析，经cloud_transport，推送sys_state） |
-| wakeword_task | 8192 | 5(CPU1) | wakeword（AFE feed+fetch合并task，MultiNet命令词+VAD检测+语音段缓冲；固定CPU1，避免与CPU0的WiFi/lwIP协议栈争抢触发watchdog——真机踩过CPU0饿死IDLE0的坑） |
+| wakeword_task | 8192 | 5(CPU1) | wakeword（AFE feed+fetch合并task，VAD检测+语音段缓冲；固定CPU1，避免与CPU0的WiFi/lwIP协议栈争抢触发watchdog——真机踩过CPU0饿死IDLE0的坑） |
 | voice_assistant_task | 12288 | 4(CPU0) | voice_assistant（单轮 Wake→ASR→Chat→TTS 编排+状态机；固定CPU0避免与CPU1的wakeword prio5互抢被饿死；处理轮次期间停 wakeword；拆分 voice_wav.c/voice_tts_stream.c 压红线） |
 | tts_playback_task | 4096 | 4(CPU0) | voice_tts_stream（TTS流式播放：从环形缓冲取PCM写codec，与网络接收解耦，边收边放降低感知延迟；每轮临时创建，播完自行退出） |
 | reply_tts_task | 6144 | 4(CPU0) | voice_assistant（TTS流式合成整句转发任务，voice_tts_stream.c；每轮临时创建，播完自行退出） |

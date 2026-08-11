@@ -78,33 +78,6 @@ i2c_master_bus_handle_t board_i2c_bus(void)
     return s_i2c_bus;
 }
 
-int board_i2c_scan(bool *shtc3, bool *es8311, bool *es7210, bool *pcf85063)
-{
-    struct {
-        uint8_t addr;
-        const char *name;
-        bool *out;
-    } devices[] = {
-        { BOARD_I2C_ADDR_SHTC3, "SHTC3", shtc3 },
-        { BOARD_I2C_ADDR_ES8311, "ES8311", es8311 },
-        { BOARD_I2C_ADDR_ES7210, "ES7210", es7210 },
-        { BOARD_I2C_ADDR_PCF85063, "PCF85063", pcf85063 },
-    };
-    int found = 0;
-    for (size_t i = 0; i < sizeof(devices) / sizeof(devices[0]); i++) {
-        bool ok = (i2c_master_probe(s_i2c_bus, devices[i].addr, 100) == ESP_OK);
-        ESP_LOGI(TAG, "I2C 0x%02X %-8s %s", devices[i].addr, devices[i].name,
-                 ok ? "FOUND" : "missing");
-        if (devices[i].out) {
-            *devices[i].out = ok;
-        }
-        if (ok) {
-            found++;
-        }
-    }
-    return found;
-}
-
 bool board_btn_boot_pressed(void)
 {
     return gpio_get_level(BOARD_BTN_BOOT_PIN) == 0;

@@ -16,12 +16,6 @@ compile_commands.json
 **/secrets.h
 **/wifi_secrets.h
 firmware/main/*_secrets.h
-bridge/config.local.json
-
-# Python桥接服务运行时
-bridge/__pycache__/
-bridge/*.pyc
-bridge/.venv/
 
 # macOS
 .DS_Store

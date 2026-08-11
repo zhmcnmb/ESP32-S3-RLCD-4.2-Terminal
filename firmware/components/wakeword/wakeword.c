@@ -18,7 +18,6 @@
 
 #include "wakeword_internal.h"
 #include "esp_log.h"
-#include "esp_heap_caps.h"
 #include "esp_afe_sr_iface.h"
 #include "esp_afe_config.h"
 #include "model_path.h"
@@ -205,33 +204,5 @@ esp_err_t wakeword_trigger(void)
     }
     g_wakeword_ctx.state = STATE_LISTENING;
     g_wakeword_ctx.vad_was_active = false;
-    return ESP_OK;
-}
-
-esp_err_t wakeword_deinit(void)
-{
-    if (!g_wakeword_ctx.afe_data) {
-        ESP_LOGW(TAG, "未初始化");
-        return ESP_ERR_INVALID_STATE;
-    }
-    if (g_wakeword_ctx.running || g_wakeword_ctx.task) {
-        ESP_LOGE(TAG, "请先停止检测任务");
-        return ESP_ERR_INVALID_STATE;
-    }
-
-    /* 销毁AFE实例 */
-    if (g_wakeword_ctx.afe_handle && g_wakeword_ctx.afe_data) {
-        g_wakeword_ctx.afe_handle->destroy(g_wakeword_ctx.afe_data);
-    }
-    /* 释放语音段缓冲与模型分区列表 */
-    if (g_wakeword_ctx.utterance_buf) {
-        heap_caps_free(g_wakeword_ctx.utterance_buf);
-    }
-    if (g_wakeword_ctx.models) {
-        esp_srmodel_deinit(g_wakeword_ctx.models);
-    }
-
-    memset(&g_wakeword_ctx, 0, sizeof(g_wakeword_ctx));
-    ESP_LOGI(TAG, "资源已释放");
     return ESP_OK;
 }

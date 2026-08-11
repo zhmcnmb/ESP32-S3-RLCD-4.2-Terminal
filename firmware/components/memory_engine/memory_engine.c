@@ -7,7 +7,6 @@
 #include <time.h>
 
 #include "esp_log.h"
-#include "esp_timer.h"
 #include "storage_sd.h"
 #include "time_service.h"
 #include "freertos/FreeRTOS.h"
@@ -239,34 +238,6 @@ esp_err_t memory_forget(memory_id_t id)
         memory_erase_entry(&s_state, index);
         if (profile) update_profile_snapshot();
     }
-    unlock_state();
-    return err;
-}
-
-esp_err_t memory_maintain(uint32_t budget_ms)
-{
-    if (budget_ms == 0 || !s_lock) return ESP_ERR_INVALID_STATE;
-    lock_state();
-    if (!s_state.initialized || !s_state.available) {
-        unlock_state();
-        return ESP_ERR_INVALID_STATE;
-    }
-    int64_t deadline = esp_timer_get_time() + (int64_t)budget_ms * 1000;
-    time_t now = time(NULL);
-    bool profile_changed = false;
-    esp_err_t err = ESP_OK;
-    for (size_t i = 0; i < s_state.count && esp_timer_get_time() < deadline;) {
-        memory_record_t *record = &s_state.entries[i].record;
-        if (!memory_record_expired(record, now)) {
-            i++;
-            continue;
-        }
-        err = memory_store_append_tombstone(record->id);
-        if (err != ESP_OK) break;
-        profile_changed |= record->type == MEMORY_TYPE_PROFILE;
-        memory_erase_entry(&s_state, i);
-    }
-    if (err == ESP_OK && profile_changed) update_profile_snapshot();
     unlock_state();
     return err;
 }

@@ -47,25 +47,6 @@ typedef struct {
 esp_err_t cloud_transport_get(cloud_transport_get_request_t *request);
 
 /*
- * 有界 JSON POST：固定发送 application/json 并要求 JSON 响应，响应由内部流式
- * 接收进调用方提供的 RAM 缓冲，绝不为云端响应无上限分配内存。
- * response_size 至少为2；超出缓冲预算返回 ESP_ERR_INVALID_SIZE，out_status 语义与
- * post_stream 一致。适用于搜索、正文提取等小型结构化 API，不替代 SSE/PCM 流。
- */
-typedef struct {
-    const char *url;
-    const char *auth_header_value; /* 非NULL时发送 Authorization: Bearer <value> */
-    const void *body;
-    size_t body_len;
-    char *response;
-    size_t response_size;
-    const volatile bool *cancel_flag;
-} cloud_transport_json_request_t;
-
-esp_err_t cloud_transport_post_json(const cloud_transport_json_request_t *request,
-                                    size_t *out_len, int *out_status);
-
-/*
  * 响应体分块回调：流式请求每收到一段响应体原始字节就调用一次，不做任何切帧/解析——
  * SSE分行、JSON提取、PCM缓冲都是调用方的事，cloud_transport只管往外递字节。
  * 回调返回非ESP_OK会中止本次传输，cloud_transport_post_stream()原样透传该错误码。

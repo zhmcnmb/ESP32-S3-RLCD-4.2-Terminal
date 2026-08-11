@@ -49,8 +49,6 @@ void audio_pipeline_cancel(void);
 
 void audio_pipeline_clear_cancel(void);
 
-esp_err_t audio_pipeline_deinit(void);
-
 #ifdef __cplusplus
 }
 #endif

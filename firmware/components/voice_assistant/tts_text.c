@@ -26,7 +26,7 @@ size_t tts_strip_markdown(const char *src, size_t len, char *out)
     return n;
 }
 
-size_t tts_sentence_len(const char *text, size_t len)
+static size_t tts_sentence_len(const char *text, size_t len)
 {
     for (size_t i = 0; i < len; i++) {
         if (text[i] == '\n' || text[i] == '.' || text[i] == '!' || text[i] == '?') return i + 1;

@@ -25,7 +25,7 @@ typedef struct {
     const char *wifi_ssid;
     const char *wifi_password;
     const char *timezone;         /* POSIX格式，如 "CST-8" */
-    const char *qweather_api_key;  /* 天气(P3)设备直连QWeather，不经bridge */
+    const char *qweather_api_key;  /* 天气(P3)设备直连QWeather */
     const char *qweather_api_host; /* 不含协议前缀，如 "xxxxx.re.qweatherapi.com" */
     const char *qweather_location; /* LocationID，如 "101010100" */
     const char *siliconflow_api_key; /* P5.0 ASR/TTS/LLM，SiliconFlow平台Key */

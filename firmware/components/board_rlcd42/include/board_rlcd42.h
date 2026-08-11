@@ -21,7 +21,6 @@ extern "C" {
 #define BOARD_LCD_SCK_PIN    GPIO_NUM_11
 #define BOARD_LCD_MOSI_PIN   GPIO_NUM_12
 #define BOARD_LCD_RST_PIN    GPIO_NUM_41
-#define BOARD_LCD_TE_PIN     GPIO_NUM_6
 #define BOARD_LCD_SPI_HOST   SPI3_HOST
 #define BOARD_LCD_WIDTH      400   /* 横屏 */
 #define BOARD_LCD_HEIGHT     300
@@ -57,10 +56,6 @@ esp_err_t board_init(void);
 
 /* 已初始化的I2C总线handle，board_init()之前调用返回NULL */
 i2c_master_bus_handle_t board_i2c_bus(void);
-
-/* 扫描I2C总线，found数组返回各设备是否在线，任意参数可传NULL。
- * 返回扫描到的设备总数。 */
-int board_i2c_scan(bool *shtc3, bool *es8311, bool *es7210, bool *pcf85063);
 
 /* 按键状态，true=按下 */
 bool board_btn_boot_pressed(void);

@@ -156,25 +156,6 @@ bool audio_pipeline_is_ready(void)
     return s_state.ready;
 }
 
-esp_err_t audio_pipeline_deinit(void)
-{
-    if (!s_state.ready) return ESP_OK;
-    s_state.ready = false;
-    gpio_set_level(BOARD_PA_EN_PIN, 0);
-
-    if (s_state.es7210_dev) {
-        esp_codec_dev_close(s_state.es7210_dev);
-        s_state.es7210_dev = NULL;
-    }
-    if (s_state.es8311_dev) {
-        esp_codec_dev_close(s_state.es8311_dev);
-        s_state.es8311_dev = NULL;
-    }
-    deinit_i2s_channels();
-    ESP_LOGI(TAG, "audio_pipeline 已去初始化");
-    return ESP_OK;
-}
-
 /* 每次 chunk 大小：160 个 int16 样本 ≈ 10ms @16kHz */
 #define AP_CHUNK_SAMPLES  160
 
