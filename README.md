@@ -1,4 +1,4 @@
-﻿# ESP32-S3-RLCD-4.2 多功能桌面终端
+# ESP32-S3-RLCD-4.2 多功能桌面终端
 
 基于 [Waveshare ESP32-S3-RLCD-4.2](https://docs.waveshare.net/ESP32-S3-RLCD-4.2) 开发板的 ESP-IDF 固件项目：反射屏桌面终端 + 端侧语音智能体。
 
@@ -49,3 +49,7 @@ idf.py build flash monitor
 │   └── components/ # 功能组件（显示/音频/网络/agent/记忆/调度等）
 └── tools/          # 中文字库生成等开发工具
 ```
+
+## 许可证
+
+[MIT](LICENSE)
