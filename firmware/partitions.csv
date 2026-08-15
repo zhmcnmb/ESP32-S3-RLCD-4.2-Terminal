@@ -1,0 +1,10 @@
+# 16MB Flash 分区规划。
+# 默认单app分区只有1MB，光WiFi协议栈就占了83%，必须扩容。
+# 分区表改动需要全片擦除，故在P2阶段一次定型，避免后续返工。
+#
+# Name,     Type, SubType,  Offset,   Size,     Flags
+nvs,        data, nvs,      0x9000,   0x6000,
+phy_init,   data, phy,      0xf000,   0x1000,
+factory,    app,  factory,  0x10000,  0x400000,
+# 语音模型分区(P5 ESP-SR用): AFE 模型，提前预留
+model,      data, spiffs,   0x410000, 0x800000,

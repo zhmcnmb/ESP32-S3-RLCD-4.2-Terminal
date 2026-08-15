@@ -1,0 +1,52 @@
+# 目标芯片: ESP32-S3-WROOM-1-N16R8 (16MB Flash, 8MB PSRAM Octal)
+CONFIG_IDF_TARGET="esp32s3"
+
+# Flash
+CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y
+CONFIG_ESPTOOLPY_FLASHMODE_QIO=y
+CONFIG_ESPTOOLPY_FLASHFREQ_80M=y
+
+# PSRAM: N16R8变体为Octal SPI PSRAM
+CONFIG_SPIRAM=y
+CONFIG_SPIRAM_MODE_OCT=y
+CONFIG_SPIRAM_SPEED_80M=y
+CONFIG_SPIRAM_USE_MALLOC=y
+
+# CPU满频240MHz: ESP-SR语音推理需要
+CONFIG_ESP_DEFAULT_CPU_FREQ_MHZ_240=y
+
+# 启动期会串行完成SD恢复、agent初始化与语音编排；默认3584B在memory_writer接入后
+# 真机触发main任务栈溢出，提升到4096B保留可观测余量。
+CONFIG_ESP_MAIN_TASK_STACK_SIZE=4096
+
+# 自定义分区表: app扩到4MB(默认1MB光WiFi就占83%)，并预留语音模型分区
+CONFIG_PARTITION_TABLE_CUSTOM=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions.csv"
+
+# FATFS: 支持长文件名与exFAT。大容量SD卡(>32GB)默认格式化为exFAT，
+# 不开这个选项会挂载失败(报ESP_FAIL)
+CONFIG_FATFS_LFN_HEAP=y
+CONFIG_FATFS_USE_FASTSEEK=y
+
+# 默认日志级别
+CONFIG_LOG_DEFAULT_LEVEL_INFO=y
+
+# ESP-SR: 按键录音模式仅需AFE+WebRTC降噪/VAD模型，无唤醒词/命令词模型
+# (2026-08起MultiNet常驻唤醒下线，见 docs/voice-agent-research.md)
+CONFIG_MODEL_IN_FLASH=y
+CONFIG_AFE_INTERFACE_V1=y
+CONFIG_SR_NSN_WEBRTC=y
+CONFIG_SR_VADN_WEBRTC=y
+
+# wakeword task(AFE/VAD)固定跑CPU1，持续占用CPU是AI推理设计使然，
+# 不是hang——真机验证时IDLE1因此拿不到5秒累计空闲时间触发task watchdog
+# 误报。CPU0(WiFi/lwIP协议栈+其余业务task)的IDLE0检查保留，用于捕获
+# 真实死锁
+CONFIG_ESP_TASK_WDT_CHECK_IDLE_TASK_CPU1=n
+
+# mbedtls: SSL TX/RX 缓冲按需分配(收发时分配、用完即释放)，不再每个连接
+# 静态预占 IN_CONTENT_LEN+OUT_CONTENT_LEN 共20KB内部RAM。内部RAM仅~29KB，
+# TTS与LLM双路TLS并发时曾致 SSL ALLOC_FAILED(-0x008D)。项目无DTLS/MQTT，
+# 无DYNAMIC_BUFFER的兼容约束(esp_http_client 场景)
+CONFIG_MBEDTLS_DYNAMIC_BUFFER=y
+

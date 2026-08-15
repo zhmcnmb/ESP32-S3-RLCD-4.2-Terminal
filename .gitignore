@@ -1,0 +1,24 @@
+# ESP-IDF构建产物
+firmware/build/
+firmware/managed_components/
+firmware/dependencies.lock
+firmware/sdkconfig
+firmware/sdkconfig.old
+*.bin
+
+# IDE本地缓存(clangd会索引secrets.h，且缓存无版本控制意义)
+.cache/
+compile_commands.json
+.vscode/
+.idea/
+
+# 密钥/凭证（绝不进仓库）
+**/secrets.h
+**/wifi_secrets.h
+firmware/main/*_secrets.h
+
+# macOS
+.DS_Store
+
+# 临时文件
+tmp/
