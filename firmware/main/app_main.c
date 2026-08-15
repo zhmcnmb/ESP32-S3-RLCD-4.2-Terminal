@@ -7,7 +7,7 @@
 #include "esp_psram.h"
 #include "secrets.h"
 
-/* 启动编排(docs/coding-standards.md 第3节): 只做芯片诊断+调用app_runtime，
+/* 启动编排: 只做芯片诊断+调用app_runtime，
  * 具体初始化顺序/页面注册/联网/语音全部下沉到 app_runtime */
 
 static const char *TAG = "app_main";

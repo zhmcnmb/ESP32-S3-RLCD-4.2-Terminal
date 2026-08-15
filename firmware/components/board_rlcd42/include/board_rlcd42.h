@@ -12,7 +12,6 @@ extern "C" {
 /*
  * 板级唯一引脚定义与总线初始化。
  * 全项目的GPIO/总线init只允许出现在这里，其他组件只拿handle。
- * 引脚权威来源: docs/hardware-pinmap.md
  */
 
 /* 显示屏 ST7305 (SPI3) */

@@ -15,7 +15,6 @@ extern "C" {
  *       llm_provider_init 已完成(失败则本组件启动后保持降级空闲)。
  *
  * 任务: voice_assistant_task, 栈12288, 优先级4
- *       (登记于 docs/coding-standards.md 第7节)
  */
 esp_err_t voice_assistant_start(void);
 

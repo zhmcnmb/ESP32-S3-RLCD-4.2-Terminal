@@ -12,7 +12,7 @@ extern "C" {
 /*
  * ST7305 全反射屏驱动，横屏400×300，1bpp。
  * 依赖 board_rlcd42 已完成SPI总线初始化(board_init)。
- * 初始化序列与像素打包公式摘自官方demo，见 docs/vendor-provenance.md。
+ * 初始化序列与像素打包公式摘自官方demo。
  */
 
 /* 创建panel IO并执行面板初始化序列，分配帧缓冲(白底) */

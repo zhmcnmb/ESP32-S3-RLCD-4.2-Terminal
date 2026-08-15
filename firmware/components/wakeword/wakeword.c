@@ -2,7 +2,7 @@
  * ESP-SR AFE(降噪/VAD) 按键录音引擎
  *
  * 触发方式: 无开放式唤醒词——BOOT短按PTT是唯一语音入口(2026-08起MultiNet
- * 常驻唤醒下线, 调研与决策见 docs/voice-agent-research.md)。
+ * 常驻唤醒下线)。
  * voice_assistant 消费PTT请求后先 wakeword_start() 拉起本组件任务, 再
  * wakeword_trigger() 注入WAKE事件; 一轮结束 wakeword_stop() 完全停掉AFE
  * 与任务——平时无常驻监听、无推理CPU开销。

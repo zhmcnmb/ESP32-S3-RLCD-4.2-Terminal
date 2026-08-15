@@ -15,7 +15,7 @@ extern "C" {
  *   BOOT 短按 -> ACTION；BOOT 长按 -> BACK（上层按上下文解读为取消）
  * 手势只在按键释放(短按)或达到长按阈值(长按)时发布一次；长按成立后释放不再补发短按。
  *
- * 任务: input_task, 栈2048, 优先级4 (登记于 docs/coding-standards.md 第7节)
+ * 任务: input_task, 栈2048, 优先级4
  */
 
 typedef enum {

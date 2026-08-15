@@ -17,7 +17,7 @@ extern "C" {
  * WIFI_SETUP_SEL_DEL / WIFI_SETUP_SEL_OK 是两个虚拟项(删除/完成)，
  * 页面按索引渲染，确认后候选停在原地方便连续输入相邻字符。
  *
- * 任务: wifi_setup_task, 栈4096, 优先级3 (登记于 docs/coding-standards.md 第7节)
+ * 任务: wifi_setup_task, 栈4096, 优先级3
  */
 
 /* 10数字 + 26大写 + 26小写 + 16符号 = 78字符；全部落在ASCII字库0x20~0x7A内 */

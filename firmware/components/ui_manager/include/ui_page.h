@@ -7,10 +7,10 @@ extern "C" {
 #endif
 
 /*
- * 页面接口契约。所有功能页面(时钟天气/环境监测/额度/语音)都实现这个结构体，
+ * 页面接口契约。所有功能页面(时钟天气/环境监测/语音等)都实现这个结构体，
  * 通过 ui_manager_register_page() 注册。
  *
- * 约定(见 docs/coding-standards.md 第6节):
+ * 约定:
  *  - 页面只负责渲染和交互，只读 sys_state 快照、提交命令，不准自己发HTTP/读传感器
  *  - 页面之间不准互相include，共享状态走 sys_state
  *  - 新增页面不需要修改 ui_manager 的任何代码

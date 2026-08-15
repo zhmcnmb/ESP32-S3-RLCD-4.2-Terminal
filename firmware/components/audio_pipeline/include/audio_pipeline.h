@@ -13,7 +13,7 @@ extern "C" {
 /*
  * ES7210(录音ADC) + ES8311(播放DAC) 统一I2S/I2C驱动，基于官方
  * esp_codec_dev 组件(ES7210录音only、ES8311播放+录音双模式，本项目只用其播放侧)。
- * 引脚见 docs/hardware-pinmap.md "I2S 音频"节；I2C总线复用 board_i2c_bus()，
+ * 引脚见 board_rlcd42.h；I2C总线复用 board_i2c_bus()，
  * 不新建总线(架构规则：I2C总线唯一由board_rlcd42初始化)。
  *
  * 采样率固定16kHz mono 16-bit PCM，与P5.0已验证的ASR/TTS格式一致，

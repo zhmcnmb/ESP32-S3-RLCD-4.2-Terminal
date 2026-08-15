@@ -12,7 +12,7 @@ extern "C" {
  * 完整 agent/TTS 链路处理——语音链路的验收测试入口，跳过录音/ASR。
  * 日志仍走同一口 TX，收发互不冲突。
  *
- * 任务: text_console, 栈3072, 优先级2 (登记于 docs/coding-standards.md 第7节)
+ * 任务: text_console, 栈3072, 优先级2
  */
 
 /* 依赖 sys_state_init() 已完成；只装 UART 驱动和读取任务 */

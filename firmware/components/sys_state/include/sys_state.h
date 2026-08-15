@@ -27,9 +27,9 @@ extern "C" {
  * 不一致组合)。"深"体现在：调用方看不到锁、轮询任务和版本管理，只看到
  * snapshot结构体。
  * R0阶段未提供通用command通道；P5.2 仅为语音取消增加最小请求位，
- * 不扩展成完整 post-command 框架(coding-standards.md 第2节)。
+ * 不扩展成完整 post-command 框架。
  *
- * 任务: sys_state_task, 栈3072, 优先级2 (登记于 docs/coding-standards.md 第7节)
+ * 任务: sys_state_task, 栈3072, 优先级2
  */
 
 #define SYS_STATE_ENV_HISTORY_LEN 60 /* 与 env_logger 环形缓冲容量保持一致 */

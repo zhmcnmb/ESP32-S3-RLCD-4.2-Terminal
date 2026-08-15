@@ -1,6 +1,6 @@
 /*
  * 音频管道实现：ES7210(录音ADC) + ES8311(播放DAC)，基于 esp_codec_dev 组件。
- * 引脚定义见 docs/hardware-pinmap.md「I2S 音频」节，I2C 总线复用 board_i2c_bus()。
+ * 引脚定义见 board_rlcd42.h，I2C 总线复用 board_i2c_bus()。
  *
  * 设计要点：
  *   - 采样率固定 16kHz mono 16-bit PCM（与 ASR/TTS 一致）

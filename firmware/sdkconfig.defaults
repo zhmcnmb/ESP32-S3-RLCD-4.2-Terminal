@@ -32,7 +32,6 @@ CONFIG_FATFS_USE_FASTSEEK=y
 CONFIG_LOG_DEFAULT_LEVEL_INFO=y
 
 # ESP-SR: 按键录音模式仅需AFE+WebRTC降噪/VAD模型，无唤醒词/命令词模型
-# (2026-08起MultiNet常驻唤醒下线，见 docs/voice-agent-research.md)
 CONFIG_MODEL_IN_FLASH=y
 CONFIG_AFE_INTERFACE_V1=y
 CONFIG_SR_NSN_WEBRTC=y

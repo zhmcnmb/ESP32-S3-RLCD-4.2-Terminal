@@ -11,8 +11,8 @@ extern "C" {
 
 /*
  * 启动编排：硬件初始化 -> 可选服务 -> UI注册 -> 异步联网。
- * 接管原 main/app_main.c 里除"打印芯片信息"外的全部启动逻辑，见
- * docs/coding-standards.md 第1节分层图；app_main.c 之后只调用这一个函数。
+ * 接管原 main/app_main.c 里除"打印芯片信息"外的全部启动逻辑，
+ * app_main.c 之后只调用这一个函数。
  *
  * 板级硬件初始化失败(board/显示/RTC/温湿度/电池/输入/UI)返回错误码，由
  * app_main 唯一决定是否 abort；可选服务(SD/校时/环境记录/联网/云客户端)
