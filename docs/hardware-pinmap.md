@@ -71,6 +71,18 @@ Type-C 直接连接 ESP32-S3 原生 USB Serial/JTAG，用于烧录和日志；ma
 
 进入下载模式：按住 BOOT，再短按 PWR 开机，随后松开 BOOT。
 
+冷启动陷阱（Windows 真机实测，2026-10-28）：
+
+- 板载锂电池会让主控在**拔掉 USB 后继续运行**，按 PWR 也未必掉电；此时插拔 USB 只是
+  重新枚举 CDC，芯片并没有复位。判据是 USB 到达时间不更新：
+  `(Get-PnpDeviceProperty -InstanceId 'USB\VID_303A&PID_1001\<序列号>' -KeyName 'DEVPKEY_Device_LastArrivalDate').Data`。
+- 若固件启用了 `auto light sleep`，CPU 睡下后 USB-Serial-JTAG 的 OUT 端点不再排空，
+  Windows 侧写串口报 121（`ERROR_SEM_TIMEOUT`），esptool 表现为 `Write timeout`、
+  COM 口能打开但一个字节都写不进去。**不是线缆或驱动问题**，重装驱动无效。
+- 恢复办法只有真正的冷启动进 ROM 下载模式：按住 BOOT 不放 → 断掉主控供电（拔 USB 且
+  长按 PWR 关机，或断电状态下按 PWR 上电）→ 松开 BOOT。固件自 2026-10-12 起在
+  `app_runtime` 中固定 `light_sleep_enable = false`，烧到该版本后该现象不再复发。
+
 ## 存储（已确认，来源：官方`06_SD_Card`示例 sdcard_bsp.h，commit b2ca44c）
 
 | 信号 | GPIO |

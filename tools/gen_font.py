@@ -15,6 +15,7 @@
 输出: firmware/components/display_st7305/font_cn16.c
 """
 
+import os
 import re
 import sys
 from pathlib import Path
@@ -26,13 +27,20 @@ FIRMWARE = ROOT / "firmware"
 CHARSET = ROOT / "tools" / "charset.txt"
 OUTPUT = ROOT / "firmware" / "components" / "display_st7305" / "font_cn16.c"
 
-FONT_PATH = "/System/Library/Fonts/STHeiti Medium.ttc"
+# 按顺序探测的首选字体：mac 黑体 / Windows 黑体、雅黑、宋体 / Linux 文泉驿
+FONT_CANDIDATES = (
+    "/System/Library/Fonts/STHeiti Medium.ttc",
+    "C:/Windows/Fonts/simhei.ttf",
+    "C:/Windows/Fonts/msyh.ttc",
+    "C:/Windows/Fonts/simsun.ttc",
+    "/usr/share/fonts/truetype/wqy/wqy-microhei.ttc",
+)
 SIZE = 16
 
 # 先剥离注释，再提取字符串字面量，避免注释中的中文混入
 COMMENT_RE = re.compile(r"//[^\n]*|/\*.*?\*/", re.DOTALL)
 STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')
-CJK_RE = re.compile(r"[一-鿿　-〿＀-￯]")
+CJK_RE = re.compile(r"[㐀-䶿一-鿿　-〿＀-￯°±×÷△▲▽▼○●◎□■◆◇★☆※←↑→↓〖〗‘’“”—…·「」『』〔〕《》〈〉]")
 
 
 def scan_source_chars() -> set[str]:
@@ -99,10 +107,18 @@ def main() -> int:
         print("没有找到任何中文字符", file=sys.stderr)
         return 1
 
-    try:
-        font = ImageFont.truetype(FONT_PATH, SIZE)
-    except OSError:
-        print(f"找不到字体: {FONT_PATH}", file=sys.stderr)
+    font = None
+    for candidate in FONT_CANDIDATES:
+        if not os.path.exists(candidate):
+            continue
+        try:
+            font = ImageFont.truetype(candidate, SIZE)
+            print(f"使用字体: {candidate}")
+            break
+        except OSError:
+            continue
+    if font is None:
+        print("找不到可用中文字体, 尝试过: " + ", ".join(FONT_CANDIDATES), file=sys.stderr)
         return 1
 
     lines = [

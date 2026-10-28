@@ -25,6 +25,9 @@ const ui_page_t *page_env_monitor_get(void);
 /* 天气页: 和风天气当前实况，数据来自 sys_state */
 const ui_page_t *page_weather_get(void);
 
+/* Codex用量页: 当日花费、额度、Token与主要模型，数据来自 sys_state */
+const ui_page_t *page_codex_usage_get(void);
+
 /* WiFi设置页: 连接状态显示与扫描配网入口，配网流程由 wifi_setup 组件驱动 */
 const ui_page_t *page_wifi_get(void);
 

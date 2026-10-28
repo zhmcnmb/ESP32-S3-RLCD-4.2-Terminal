@@ -15,7 +15,7 @@ extern "C" {
  * 全局状态快照：UI(及后续P6 agent工具)读取设备/业务状态的唯一权威入口。
  *
  * 两种数据来源：
- *  1. 已有独立后台任务的服务(env_logger历史/weather_client)
+ *  1. 已有独立后台任务的服务(env_logger历史/weather_client/codex_usage_client)
  *     在自己任务里完成一次采集后调用对应 sys_state_apply_*() 推送进来。
  *  2. 没有专属后台任务的"环境状态"(瞬时温湿度/电池/WiFi/SD挂载) 由本模块
  *     自己的内部轮询任务定期采集并写入，页面不需要关心谁在采集。
@@ -54,6 +54,40 @@ typedef struct {
     float temperature;
     float humidity;
 } sys_state_env_sample_t;
+
+#define SYS_CODEX_MODEL_MAX 32
+#define SYS_CODEX_MODEL_LIST_LEN 5
+#define SYS_CODEX_HISTORY_LEN 7
+
+typedef struct {
+    uint32_t date; /* 本地日期，YYYYMMDD */
+    float cost;
+    uint64_t tokens;
+} sys_state_codex_day_t;
+
+typedef struct {
+    char name[SYS_CODEX_MODEL_MAX];
+    float cost;
+    uint64_t tokens;
+} sys_state_codex_model_t;
+
+typedef struct {
+    bool available;
+    float daily_cost;
+    float daily_limit;
+    float weekly_usage; /* 套餐周额度已用；线上缺失/为 null 时置 0 */
+    float weekly_limit; /* 0 表示无周额度，页面不绘制 WEEK 行 */
+    uint64_t input_tokens;
+    uint64_t cached_tokens;
+    uint64_t output_tokens;
+    uint32_t requests;
+    sys_state_codex_model_t models[SYS_CODEX_MODEL_LIST_LEN];
+    int model_count;
+    time_t updated_at;
+    sys_state_codex_day_t history[SYS_CODEX_HISTORY_LEN]; /* 日期降序，含今日 */
+    int history_count;
+    char novel_line[96]; /* 摸鱼阅读行：桥接按整字切好(≤60字节UTF-8)，随用量包下发 */
+} sys_state_codex_usage_t;
 
 /* WiFi配网(wifi_setup组件/page_wifi页)。视图整体推送避免11参数函数。 */
 #define SYS_WIFI_AP_MAX 12
@@ -126,6 +160,8 @@ typedef struct {
     char weather_wind[40];
     time_t weather_updated_at;
 
+    /* Codex中转服务的当日用量 */
+    sys_state_codex_usage_t codex_usage;
 
     /* 语音助手(P5.2)：page_jarvis 只读这些字段 */
     sys_voice_phase_t voice_phase;
@@ -135,11 +171,11 @@ typedef struct {
     /* WiFi配网视图：wifi_setup 推送，page_wifi 只读 */
     sys_wifi_setup_view_t wifi_setup;
 
-    uint32_t version; /* 任意字段更新即递增，页面据此判断数据是否变化 */
+    uint32_t version; /* 仅当字段值实际变化时递增（带容差比较），页面据此判断是否重绘 */
 } sys_state_snapshot_t;
 
 /* 依赖 shtc3_init()/battery_init()/board_init() 已完成；内部轮询任务采集瞬时
- * 温湿度/电池/WiFi/SD状态，与env_logger/weather_client
+ * 温湿度/电池/WiFi/SD状态，与env_logger/weather_client/codex_usage_client
  * 各自的后台任务相互独立、互不阻塞 */
 esp_err_t sys_state_init(void);
 
@@ -152,6 +188,9 @@ void sys_state_get_snapshot(sys_state_snapshot_t *out);
 void sys_state_apply_env_history(const sys_state_env_sample_t *samples, int count, uint32_t total);
 void sys_state_apply_weather(bool available, float temperature, int humidity,
                              const char *condition, const char *wind, time_t updated_at);
+
+void sys_state_apply_codex_usage(const sys_state_codex_usage_t *usage);
+void sys_state_mark_codex_usage_unavailable(void);
 
 /* voice_assistant 推进相位；turn_id 由调用方递增后传入。reason 仅在
  * phase==SYS_VOICE_ERROR 时展示，可传NULL(显示通用"故障")；其余相位忽略 */

@@ -1,13 +1,13 @@
 # 设备端个人智能体：架构、边界与验收
 
-> 最后更新：2026-07-18
+> 最后更新：2026-08-13
 > 当前基线：P5.2 核心语音闭环已真机验证；P6.0、P6.1、P6.2 M1、P6.3 M1 已实现。未完成的真机验收不视为已完成，见第 7 节。
 
 本文件只保留当前实现、稳定约束和验收门槛。编码规则见 [`coding-standards.md`](coding-standards.md)，引脚见 [`hardware-pinmap.md`](hardware-pinmap.md)，摘取的供应商代码见 [`vendor-provenance.md`](vendor-provenance.md)。
 
 ## 1. 产品边界
 
-设备是身份、状态、会话、记忆、任务和权限的唯一权威；云端仅提供 ASR、LLM、TTS 与受限公开网络检索；不得依赖 Mac/PC 常驻进程。
+设备是身份、状态、会话、记忆、任务和权限的唯一权威；云端仅提供 ASR、LLM、TTS、公开只读用量查询与受限公开网络检索；不得依赖 Mac/PC 常驻进程。
 
 当前不做：任意代码或 shell 执行、动态安装工具、并行工具、多智能体、Cron、Home Assistant、Telegram、Browser、MCP 和远程执行。它们没有真实需求前不进入固件。
 
@@ -20,6 +20,7 @@ app_runtime                         启动顺序、注册、降级
       +-- input_manager             KEY/BOOT 的唯一 GPIO 所有者
       +-- sys_state                 跨模块状态、命令、提醒邮箱
       +-- ui_manager / ui_pages     只读快照并渲染
+      +-- codex_usage_client        锐奇中转公开只读 /v1/usage -> sys_state
       +-- voice_assistant           一轮语音编排、取消、提醒播报
       |     +-- agent_runtime       消息 -> 模型 -> 工具循环
       |           +-- agent_session / agent_tools
@@ -85,6 +86,16 @@ BOOT 短按 PTT
 - 到期文本先投递给 `sys_state` 的单槽提醒邮箱；语音空闲后播报“提醒：…”（空闲时录音管线本就停止，无需抢占麦克风）。
 - `set_reminder` 与 `cancel_reminder` 只在用户明确表达提醒/定时意图时注册；`list_reminders` 是只读工具。
 
+### 3.5 用量页（REECHI）
+
+`codex_usage_client` 每 60 秒拉取局域网桥接 `GET /v1/usage`，结果写入 `sys_state.codex_usage`；页面只读快照渲染，不自行发 HTTP。
+
+- 桥接 `tools/usage_bridge.py` 用 spool 仪表盘登录会话读取调用明细，在内存里维护**过去 24 小时滚动窗口**按模型聚合 token，得到 `model_stats`。
+- 同一份包里的 `usage.today`（今日卡片）、`subscription`（日/周额度）、`daily_usage`（近 7 天逐日）来自中转 `/v1/usage` 的**套餐当日口径**，与 24h 滑窗不是同一时间窗，两个口径不应当互相校验相等。
+- 底部一行是桥接轮换下发的古诗句，随数据包一起刷新；文案字符必须在字库内（`tools/charset.txt` 保证），否则屏幕出现空白。
+- 桥接连续失败 3 次后把缓存包标 `isValid=false`，设备显示 `OLD` 角标；从未取到数据时显示 `WAIT`（有网）或 `OFFLINE`（断网），不阻塞其它页面。
+- 额度上限缺失（例如 `weekly_limit_usd` 为 null）时该行整行不绘制，属正常降级。
+
 ## 4. 配置与数据位置
 
 - 本地凭据只放 `firmware/main/secrets.h`，模板是 `secrets.h.example`，不得提交密钥。
@@ -107,6 +118,7 @@ BOOT 短按 PTT
 | P6.1 Web / Skills | 已实现 | 启动可索引 Skill；免 Key 搜索（Bing）与来源受限抽取已真机验收（2026-08-10，串口文本注入驱动）；Skill CRC 篡改和拔卡回归待验收。 |
 | P6.2 记忆 M1 | 已实现 | 记住/召回/重启恢复已验收（2026-08-11 文本注入：`remember` 写入、复位后"已恢复1条长期记忆"、召回一致）；双槽截断回退、撕裂末行、tombstone、拔卡降级待验收。 |
 | P6.3 提醒 M1 | 已实现 | 创建、到点播报、重启恢复、到期后不恢复已验收（2026-08-11 文本注入：复位后"已恢复提醒1条"、`list_reminders` 一致、到点播报轮完整运行）；BOOT 取消、取消后不播、通话后补播、无 SD 降级待验收。 |
+| P6.4 用量页 | 已实现并真机验收 | 桥接改为 24h 滑窗模型聚合（2026-10-14）；2026-10-28 烧录（hash verified）后设备每 60s 拉取 `/v1/usage`、串口无 `usage update failed`，屏幕确认 `TOP MODELS (24H)` 三行模型与 token 数字正常。降级面（`OLD` 角标、断网 `OFFLINE`）与跨自然日滑窗边界见第 7 节第 6 项。 |
 
 ## 7. 未完成真机验收
 
@@ -117,6 +129,7 @@ BOOT 短按 PTT
 3. SD 记忆：记住/召回、重启恢复已验收（2026-08-11 文本注入）；双槽截断回退、JSONL 撕裂末行、遗忘 tombstone、拔卡降级及连续五轮写入无卡顿待验收。
 4. Web / Skill：免 Key 搜索与来源受限抽取已验收（2026-08-10，文本注入：多来源搜索、白名单抽取正文、无搜索时拒绝抽取）；2026-08-11 二十轮中 3 次 web_search + 1 次 get_weather 持续可用；仍待验证 Skill CRC 篡改和拔卡降级。
 5. 提醒：创建、到点播报、到期前重启恢复、到期后不恢复已验收（2026-08-11 文本注入）；BOOT 长按取消、取消后不播、通话后补播以及拔 SD 后 RAM 降级待验收。
+6. 用量页主链路已验收（2026-10-28 烧录后设备每 60s 拉取 `/v1/usage`、串口无失败日志，屏幕确认 `TOP MODELS (24H)`）；仍待验证降级面：桥接连续失败后的 `OLD` 角标、断网 `OFFLINE` 空态，以及跨自然日（00:00 前后）滑窗边界与 7 天表首行对齐。
 
 ## 8. 构建与发布
 

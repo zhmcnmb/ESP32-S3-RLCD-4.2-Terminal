@@ -28,6 +28,8 @@ typedef struct {
     const char *qweather_api_key;  /* 天气(P3)设备直连QWeather */
     const char *qweather_api_host; /* 不含协议前缀，如 "xxxxx.re.qweatherapi.com" */
     const char *qweather_location; /* LocationID，如 "101010100" */
+    const char *codex_usage_base_url; /* 锐奇中转 origin，如 https://rq.yunyc.work */
+    const char *codex_usage_api_key;  /* 锐奇中转 sk-，只读 /v1/usage */
     const char *siliconflow_api_key; /* P5.0 ASR/TTS/LLM，SiliconFlow平台Key */
     const char *siliconflow_llm_model; /* SiliconFlow LLM精确模型标识，不含provider URL */
     const char *siliconflow_llm_url; /* SiliconFlow LLM端点，URL须配置化 */

@@ -145,12 +145,13 @@ typedef struct {
 | 任务 | 栈 | 优先级 | 组件 |
 |---|---|---|---|
 | main_task | 4096 | 1 | app_main（启动后即退出；SD恢复+agent初始化调用链需保留足够栈余量） |
-| input_task | 2048 | 4 | input_manager（30ms轮询KEY/BOOT，消抖+长短按判定） |
+| input_task | 2048 | 4 | input_manager（GPIO负沿中断唤醒；按下期间30ms步进消抖+长短按判定，释放后回阻塞） |
 | ui_task | 4096 | 5 | ui_manager（消费input_manager语义事件；无输入时1s周期tick） |
 | sys_state_task | 3072 | 2 | sys_state（10s轮询瞬时温湿度/电池/WiFi/SD状态，写入共享快照） |
 | text_console | 3072 | 2 | text_console（USB-Serial-JTAG RX 阻塞读一行文本，投 sys_state 文本邮箱；验收测试入口，无网络/文件IO） |
 | env_logger_task | 4096 | 3 | env_logger（60s采样温湿度，写环形缓冲+CSV，同步推送sys_state） |
 | weather_task | 8192 | 3 | weather_client（USB供电15分钟、仅电池30分钟直连QWeather，TLS+gzip+cJSON解析，经cloud_transport，推送sys_state） |
+| codex_usage_task | 8192 | 3 | codex_usage_client（USB供电30秒、仅电池60秒轮询本地桥接 /v1/usage，与上游仪表盘30s缓存对齐，推送sys_state） |
 | wakeword_task | 8192 | 5(CPU1) | wakeword（AFE feed+fetch合并task，VAD检测+语音段缓冲；固定CPU1，避免与CPU0的WiFi/lwIP协议栈争抢触发watchdog——真机踩过CPU0饿死IDLE0的坑） |
 | voice_assistant_task | 12288 | 4(CPU0) | voice_assistant（单轮 Wake→ASR→Chat→TTS 编排+状态机；固定CPU0避免与CPU1的wakeword prio5互抢被饿死；处理轮次期间停 wakeword；拆分 voice_wav.c/voice_tts_stream.c 压红线） |
 | tts_playback_task | 4096 | 4(CPU0) | voice_tts_stream（TTS流式播放：从环形缓冲取PCM写codec，与网络接收解耦，边收边放降低感知延迟；每轮临时创建，播完自行退出） |
@@ -172,7 +173,7 @@ typedef struct {
 
 ## 9. 密钥管理
 
-- WiFi 密码、和风天气 API Key、LLM token **一律不进仓库**
+- WiFi 密码、和风天气 API Key、Codex用量apiId、LLM token **一律不进仓库**
 - 开发期放 `firmware/main/secrets.h`（已在 `.gitignore` 里），提供 `secrets.h.example` 模板
 - 正式方案：存 NVS，通过配网写入
 

@@ -1,4 +1,5 @@
 #include <string.h>
+#include <time.h>
 
 #include "display_st7305.h"
 #include "esp_log.h"
@@ -10,7 +11,7 @@
 /*
  * Jarvis 默认页：圆形双眼头像 + 极短状态。
  * 只读 sys_state 快照；全局语音取消由 ui_manager 提交。
- * 聆听呼吸环/思考轮转点/回答声波杠是每秒级绘制动画，待命每5秒眨眼一次；
+ * 聆听呼吸环/思考轮转点/回答声波杠是每秒级绘制动画，待命每30秒眨眼一次；
  * 动画只影响绘制帧，不触碰语音状态机。
  * 待命无状态文案时底部轮播一句诗，进入页面随机选、每60秒换一句。
  */
@@ -41,6 +42,7 @@ typedef struct {
     bool battery_ok;
     int battery_percent;
     bool battery_charging;
+    time_t minute;
     char voice_error[24];
 } jarvis_view_t;
 
@@ -96,6 +98,7 @@ static bool view_changed(const sys_state_snapshot_t *snap)
            || s_view.battery_ok != snap->battery_ok
            || s_view.battery_percent != snap->battery_percent
            || s_view.battery_charging != snap->battery_charging
+           || s_view.minute != snap->now / 60
            || strcmp(s_view.voice_error, snap->voice_error) != 0;
 }
 
@@ -107,6 +110,7 @@ static void save_view(const sys_state_snapshot_t *snap)
     s_view.battery_ok = snap->battery_ok;
     s_view.battery_percent = snap->battery_percent;
     s_view.battery_charging = snap->battery_charging;
+    s_view.minute = snap->now / 60;
     strncpy(s_view.voice_error, snap->voice_error, sizeof(s_view.voice_error) - 1);
     s_view.voice_error[sizeof(s_view.voice_error) - 1] = '\0';
 }
@@ -278,12 +282,15 @@ static void on_tick(void)
                || snap.voice_phase == SYS_VOICE_SPEAKING) {
         redraw = true; /* 活跃相位逐秒动画 */
     } else if (snap.voice_phase == SYS_VOICE_IDLE) {
-        if (s_anim_tick % 60 == 0) {
-            s_poem_idx = next_poem_idx(); /* 每60秒换一句诗 */
+        /* USB供电保持轻快动画；电池供电降频（RLCD静态近零，重绘是纯耗电项） */
+        int blink_period = snap.battery_charging ? 5 : 30;
+        int poem_period = snap.battery_charging ? 60 : 300;
+        if (s_anim_tick % poem_period == 0) {
+            s_poem_idx = next_poem_idx();
             redraw = true;
         }
-        if (!s_blinking && s_anim_tick % 5 == 0) {
-            s_blinking = true;  /* 每5秒眨一次 */
+        if (!s_blinking && s_anim_tick % blink_period == 0) {
+            s_blinking = true;
             redraw = true;
         } else if (s_blinking) {
             s_blinking = false; /* 下一秒恢复睁眼 */
