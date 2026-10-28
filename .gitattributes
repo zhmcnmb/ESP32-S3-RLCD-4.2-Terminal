@@ -1,0 +1,4 @@
+# 统一换行：源码与文档用 LF，PowerShell 脚本用 CRLF（计划任务/Windows 直接执行）
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bin binary

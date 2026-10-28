@@ -20,6 +20,7 @@ static sys_state_snapshot_t s_state;
 static SemaphoreHandle_t s_lock;
 static bool s_voice_cancel_req = false;
 static bool s_voice_trigger_req = false;
+static bool s_codex_refresh_req = false;
 static sys_wifi_cmd_t s_wifi_cmd = SYS_WIFI_CMD_NONE; /* NONE=空槽 */
 static char s_reminder[SYS_STATE_REMINDER_TEXT_MAX]; /* 空串=无待播报提醒 */
 static char s_text_turn[SYS_STATE_TEXT_TURN_MAX];    /* 空串=无待处理文本轮 */
@@ -184,8 +185,11 @@ void sys_state_mark_codex_usage_unavailable(void)
 {
     if (!s_lock) return;
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_state.codex_usage.available = false;
-    bump_version_locked();
+    /* 已经不可用就不再 bump: 持续失败时每秒重绘一次毫无意义 */
+    if (s_state.codex_usage.available) {
+        s_state.codex_usage.available = false;
+        bump_version_locked();
+    }
     xSemaphoreGive(s_lock);
 }
 
@@ -280,6 +284,28 @@ bool sys_state_consume_voice_trigger(void)
     xSemaphoreTake(s_lock, portMAX_DELAY);
     bool req = s_voice_trigger_req;
     s_voice_trigger_req = false;
+    xSemaphoreGive(s_lock);
+    return req;
+}
+
+void sys_state_request_codex_refresh(void)
+{
+    if (!s_lock) {
+        return;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_codex_refresh_req = true;
+    xSemaphoreGive(s_lock);
+}
+
+bool sys_state_consume_codex_refresh(void)
+{
+    if (!s_lock) {
+        return false;
+    }
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    bool req = s_codex_refresh_req;
+    s_codex_refresh_req = false;
     xSemaphoreGive(s_lock);
     return req;
 }

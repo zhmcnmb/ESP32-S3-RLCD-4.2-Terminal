@@ -16,8 +16,12 @@
 
 static const char *TAG = "codex_usage";
 
-#define POLL_INTERVAL_MS (60 * 1000)
-#define POLL_INTERVAL_BATTERY_MS (60 * 1000)
+/* 插电(USB)时 20s 刷新, 电池供电 300s: 与页面"进页即刷新"的体验一起决定观感。 */
+#define POLL_INTERVAL_MS (20 * 1000)
+#define POLL_INTERVAL_BATTERY_MS (300 * 1000)
+/* 页面进入时请求立即刷新；最小间隔防止连续翻页把接口打爆。 */
+#define REFRESH_SLICE_MS 250
+#define REFRESH_MIN_GAP_MS (8 * 1000)
 /* 实测 7 天+6 模型约 3.7KB，已贴近 4KB；留 8KB 余量，超限再提高。 */
 #define RESPONSE_SIZE 8192
 
@@ -163,7 +167,8 @@ static bool add_model(const cJSON *model, sys_state_codex_usage_t *usage)
     if (!json_u64(model, "total_tokens", &tokens)) tokens = sum_tokens(input, cached, output);
 
     int pos = 0;
-    while (pos < usage->model_count && cost <= usage->models[pos].cost) pos++;
+    /* 按 token 降序插入: 页面只展示 token, 排序口径必须与展示一致 */
+    while (pos < usage->model_count && tokens <= usage->models[pos].tokens) pos++;
     if (pos >= SYS_CODEX_MODEL_LIST_LEN) return true;
     int count = usage->model_count < SYS_CODEX_MODEL_LIST_LEN ?
                 usage->model_count + 1 : SYS_CODEX_MODEL_LIST_LEN;
@@ -194,7 +199,7 @@ static bool parse_history(const cJSON *days, sys_state_codex_usage_t *usage)
     return true;
 }
 
-static esp_err_t parse_response(sys_state_codex_usage_t *usage)
+static esp_err_t parse_response(sys_state_codex_usage_t *usage, bool *fresh)
 {
     cJSON *root = cJSON_Parse(s_response);
     cJSON *valid = root ? cJSON_GetObjectItem(root, "isValid") : NULL;
@@ -202,16 +207,17 @@ static esp_err_t parse_response(sys_state_codex_usage_t *usage)
     cJSON *models = root ? cJSON_GetObjectItem(root, "model_stats") : NULL;
     cJSON *days = root ? cJSON_GetObjectItem(root, "daily_usage") : NULL;
     cJSON *limits = root ? cJSON_GetObjectItem(root, "subscription") : NULL;
-    bool ok = root && (!valid || cJSON_IsTrue(valid)) && cJSON_IsObject(today) &&
+    /* isValid 表达"数据新鲜度"而非"能否解析": 桥接把旧包标 false 时仍然渲染内容,
+     * 只把可用性置 false 让页面显示 OLD 角标, 而不是整包丢弃。 */
+    if (fresh) *fresh = (!valid || cJSON_IsTrue(valid));
+    bool ok = root && cJSON_IsObject(today) &&
               cJSON_IsArray(models) &&
               read_counts(today, &usage->input_tokens, &usage->cached_tokens,
                           &usage->output_tokens, &usage->requests, &usage->daily_cost) &&
               parse_history(days, usage);
     if (ok && cJSON_IsObject(limits)) {
         ok = json_cost(limits, "daily_limit_usd", &usage->daily_limit);
-        /* 周/月额度可缺省或为 null（线上 monthly_limit_usd 即 null），缺失不作为解析失败。 */
-        if (ok) (void)json_cost(limits, "weekly_usage_usd", &usage->weekly_usage);
-        if (ok) (void)json_cost(limits, "weekly_limit_usd", &usage->weekly_limit);
+        /* 周/月额度线上恒为 null（已实测），页面也不再展示 WEEK 行，因此不解析。 */
     }
     if (ok) {
         const cJSON *model = NULL;
@@ -261,18 +267,20 @@ static esp_err_t poll_once(void)
     esp_err_t err = cloud_transport_get_stream(url, auth ? "Authorization" : NULL, auth,
                                                collect_chunk, &buffer, NULL, &status);
     sys_state_codex_usage_t usage = {0};
-    if (err == ESP_OK) err = parse_response(&usage);
+    bool fresh = true;
+    if (err == ESP_OK) err = parse_response(&usage, &fresh);
     if (err != ESP_OK) {
         sys_state_mark_codex_usage_unavailable();
         ESP_LOGW(TAG, "usage update failed: %s, status=%d", esp_err_to_name(err), status);
         return err;
     }
+    usage.available = fresh;
     if (!usage_changed(&usage)) {
         return ESP_OK; /* 内容与当前一致, 不 bump 版本不触发重绘 */
     }
-    usage.available = true;
     usage.updated_at = time(NULL);
     sys_state_apply_codex_usage(&usage);
+    if (!fresh) ESP_LOGW(TAG, "usage payload marked stale by bridge");
     return ESP_OK;
 }
 
@@ -284,13 +292,26 @@ static uint32_t poll_delay_ms(void)
            POLL_INTERVAL_BATTERY_MS : POLL_INTERVAL_MS;
 }
 
+/* 等待下一次轮询；期间若页面请求刷新（进页触发），过了最小间隔就提前返回。 */
+static void wait_next_poll(uint32_t interval_ms)
+{
+    uint32_t waited = 0;
+    while (waited < interval_ms) {
+        if (waited >= REFRESH_MIN_GAP_MS && sys_state_consume_codex_refresh()) {
+            return;
+        }
+        vTaskDelay(pdMS_TO_TICKS(REFRESH_SLICE_MS));
+        waited += REFRESH_SLICE_MS;
+    }
+}
+
 static void usage_task(void *arg)
 {
     (void)arg;
-    TickType_t last_wake = xTaskGetTickCount();
     for (;;) {
+        (void)sys_state_consume_codex_refresh(); /* 清掉启动前的残留请求 */
         poll_once();
-        vTaskDelayUntil(&last_wake, pdMS_TO_TICKS(poll_delay_ms()));
+        wait_next_poll(poll_delay_ms());
     }
 }
 
@@ -325,7 +346,8 @@ esp_err_t codex_usage_client_init(const char *base_url, const char *api_key)
         s_response = NULL;
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "started, refresh=%ds", POLL_INTERVAL_MS / 1000);
+    ESP_LOGI(TAG, "started, refresh=%ds(usb)/%ds(battery), on-enter refresh",
+             POLL_INTERVAL_MS / 1000, POLL_INTERVAL_BATTERY_MS / 1000);
     /* 上游聚合桥(tools/usage_bridge.py默认30s)缓存周期小于拉取周期，每次拉取都拿到新数据 */
     return ESP_OK;
 }

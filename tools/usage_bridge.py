@@ -14,6 +14,7 @@
 import argparse
 import json
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -25,11 +26,35 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TZ_CN = timezone(timedelta(hours=8))
 SESSION_STATE = os.path.join(tempfile.gettempdir(), "usage_bridge_session.json")
+# 诗句轮换周期: 设成 30s 会让设备每次 60s 轮询都判定"有更新"，整屏每分钟重刷一次。
+POEM_ROTATE_SECONDS = 600
+
+
+LOG_PATH = ""
+LOG_MAX_BYTES = 2 * 1024 * 1024
+
+
+def _append_rotating(line):
+    """日志文件超过 2MB 就轮转成 .1（只留一份备份），避免长期运行把盘吃满。"""
+    try:
+        if os.path.getsize(LOG_PATH) > LOG_MAX_BYTES:
+            os.replace(LOG_PATH, LOG_PATH + ".1")
+    except OSError:
+        pass
+    try:
+        with open(LOG_PATH, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
+        pass
 
 
 def log(msg):
     """带时间戳的日志: 断链/恢复的时间点要能从事后日志里看出来。"""
-    print(f"[{datetime.now():%m-%d %H:%M:%S}] {msg}")
+    line = f"[{datetime.now():%m-%d %H:%M:%S}] {msg}"
+    if LOG_PATH:
+        _append_rotating(line)
+    else:
+        print(line)
 
 # 底部轮换诗句(全部 ≤20 字, GB2312 字库内)
 POEMS = (
@@ -241,25 +266,35 @@ class RelayClient:
 class ModelAggregator24H:
     """过去 24 小时模型用量精确滑窗聚合器。
 
-    从 spool /api/v1/usage 拉取明细，维护 24 小时内存滑窗；
-    冷启动时向前拉取到 24h 截止线，之后每轮增量检查第 1 页并剔除过期记录。
+    从 spool /api/v1/usage 拉取明细，维护 24 小时内存滑窗。服务端支持 start_date
+    过滤（实测 start_date=2026-10-27 把 24175 条筛到 696 条）与 page_size=500，
+    所以冷启动按日期过滤 + 大页拉取，1~2 页即可覆盖窗口，不再靠 2000 条硬上限。
     """
+
+    PAGE_SIZE = 500          # 服务端实测接受 500/页
+    MAX_PAGES = 20           # 20*500=10000 条，足够 4 倍于历史峰值单日记录数
+    FULL_RESCAN_SECONDS = 1800  # 每 30 分钟全量重扫一次，补回晚到/回填记录
 
     def __init__(self, spool):
         self.spool = spool
         self.records = {}  # id -> (created_at_utc, item)
         self.models = []
+        self.truncated = False
+        self.last_full_scan = 0.0
 
-    def update(self):
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
-        page = 1
+    def _fetch_new(self, cutoff, full_scan):
+        """按时间倒序翻页，撞到过期记录或已知 id 即停；返回新增记录。"""
+        start_date = (datetime.now(TZ_CN) - timedelta(hours=24)).date().isoformat()
         new_items = []
-        keep_going = True
-        while keep_going and page <= 20:
-            resp = self.spool.get("/usage", {"page": page, "page_size": 100})
+        page = 1
+        exhausted = False
+        while page <= self.MAX_PAGES:
+            resp = self.spool.get("/usage", {"page": page, "page_size": self.PAGE_SIZE,
+                                             "start_date": start_date, "sort_order": "desc"})
             items = resp.get("items", []) if isinstance(resp, dict) else []
             if not items:
                 break
+            stop = False
             for it in items:
                 rec_id = it.get("id")
                 ca_str = it.get("created_at")
@@ -270,13 +305,34 @@ class ModelAggregator24H:
                 except ValueError:
                     continue
                 if ca < cutoff:
-                    keep_going = False
+                    stop = True
                     break
-                if rec_id in self.records:
-                    keep_going = False
+                if not full_scan and rec_id in self.records:
+                    stop = True
                     break
-                new_items.append((rec_id, ca, it))
+                if rec_id not in self.records:
+                    new_items.append((rec_id, ca, it))
+            if stop or len(items) < self.PAGE_SIZE:
+                break
             page += 1
+        else:
+            exhausted = True
+        return new_items, exhausted
+
+    def update(self):
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        now = time.time()
+        full_scan = now - self.last_full_scan >= self.FULL_RESCAN_SECONDS
+        new_items, exhausted = self._fetch_new(cutoff, full_scan)
+        if full_scan:
+            self.last_full_scan = now
+        self.truncated = exhausted
+        if exhausted:
+            log(f"[agg] 24h 窗口超过 {self.MAX_PAGES * self.PAGE_SIZE} 条记录，结果可能偏少")
+
+        for rec_id, ca, it in new_items:
+            self.records[rec_id] = (ca, it)
+
 
         for rec_id, ca, it in new_items:
             self.records[rec_id] = (ca, it)
@@ -319,34 +375,32 @@ class ModelAggregator24H:
         return models
 
 
-def build_payload(models, relay, poem):
-    """按固件解析契约拼 JSON; token/模型=24小时滑窗模型, 今日token/额度/逐日=中转套餐, 底行=诗句。"""
-    if relay and relay.get("usage") and relay["usage"].get("today"):
-        relay_today = relay["usage"]["today"]
-        today = {
-            "input_tokens": relay_today.get("input_tokens", 0) or 0,
-            "cache_read_tokens": relay_today.get("cache_read_tokens", 0) or 0,
-            "cache_creation_tokens": relay_today.get("cache_creation_tokens", 0) or relay_today.get("cache_write_tokens", 0) or 0,
-            "output_tokens": relay_today.get("output_tokens", 0) or 0,
-            "requests": relay_today.get("requests", 0) or 0,
-            "total_tokens": relay_today.get("total_tokens", 0) or 0,
-            "cost": relay_today.get("cost", 0) or 0,
-        }
-    else:
-        today = {"input_tokens": 0, "cache_read_tokens": 0, "cache_creation_tokens": 0,
-                 "output_tokens": 0, "requests": 0, "total_tokens": 0, "cost": 0}
-        for m in models:
-            for key in ("input_tokens", "cache_read_tokens", "cache_creation_tokens",
-                        "output_tokens", "requests", "total_tokens"):
-                today[key] += m[key]
+def build_payload(models, relay, poem, fresh=True):
+    """按固件解析契约拼 JSON; 模型=24小时滑窗, 今日token/额度/逐日=中转套餐, 底行=诗句。
+
+    没有中转套餐数据时返回 None: 24h 滑窗的合计不能冒充"今日"——两个口径不同窗口,
+    宁可让设备保持 WAIT/OLD, 也不要把 24h 数字写成今日。
+    """
+    if not (relay and relay.get("usage") and relay["usage"].get("today")):
+        return None
+    relay_today = relay["usage"]["today"]
+    today = {
+        "input_tokens": relay_today.get("input_tokens", 0) or 0,
+        "cache_read_tokens": relay_today.get("cache_read_tokens", 0) or 0,
+        "cache_creation_tokens": relay_today.get("cache_creation_tokens", 0) or relay_today.get("cache_write_tokens", 0) or 0,
+        "output_tokens": relay_today.get("output_tokens", 0) or 0,
+        "requests": relay_today.get("requests", 0) or 0,
+        "total_tokens": relay_today.get("total_tokens", 0) or 0,
+        "cost": relay_today.get("cost", 0) or 0,
+    }
 
     payload = {
-        "isValid": True,
+        "isValid": bool(fresh),
         "usage": {"today": today},
         "model_stats": models,
-        "daily_usage": (relay or {}).get("daily_usage") or [],
+        "daily_usage": relay.get("daily_usage") or [],
     }
-    if relay and relay.get("subscription"):
+    if relay.get("subscription"):
         payload["subscription"] = relay["subscription"]
     if poem:
         payload["novel"] = {"text": poem}  # 沿用固件 novel 字段契约
@@ -362,17 +416,28 @@ class Bridge:
         self.lock = threading.Lock()
         self.payload_bytes = b""
         self.fail_streak = 0
+        self.last_refresh = 0.0
+
+    def _fresh(self):
+        """中转额度超过 10 分钟没更新就按旧数据处理, 让设备显示 OLD 角标。"""
+        return (self.fail_streak == 0 and self.relay.fetched_at > 0
+                and time.time() - self.relay.fetched_at < 600)
 
     def refresh_once(self):
         relay = self.relay.fetch()
         models = self.aggregator.update()
-        poem = POEMS[int(time.time() // 30) % len(POEMS)]
-        payload = build_payload(models, relay, poem)
+        poem = POEMS[int(time.time() // POEM_ROTATE_SECONDS) % len(POEMS)]
+        payload = build_payload(models, relay, poem, self._fresh())
+        if payload is None:
+            log("[bridge] 无中转套餐数据, 暂不发布(设备保持 WAIT/OLD)")
+            return None
         data = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         self.spool.available = True
+        self.last_refresh = time.time()
         with self.lock:
             self.payload_bytes = data
         return payload
+
 
     def _mark_stale(self):
         """连续拉取失败后把缓存 payload 标为失效, 设备据此显示 OLD 角标而非默默端旧数据。"""
@@ -387,22 +452,27 @@ class Bridge:
                 pass
 
     def loop(self):
+        backoff = self.refresh
         while True:
             try:
                 self.refresh_once()
                 self.fail_streak = 0
+                backoff = self.refresh
             except Exception as exc:  # 后台线程不允许退出
                 self.fail_streak += 1
                 log(f"[refresh] 失败(连续{self.fail_streak}次): {exc}")
                 if self.fail_streak == 3:
                     self._mark_stale()
-            time.sleep(self.refresh)
+                # 失败退避: 连续失败时逐步拉长到 5 分钟, 避免把日志刷爆
+                backoff = min(self.refresh * (2 ** min(self.fail_streak, 4)), 300)
+            time.sleep(backoff)
 
     def start(self):
         try:
             payload = self.refresh_once()
-            log(f"[bridge] 首次聚合完成: 今日 {payload['usage']['today']['total_tokens']} tokens, "
-                f"24H {len(payload['model_stats'])} 模型, 额度={'有' if 'subscription' in payload else '无'}")
+            if payload:
+                log(f"[bridge] 首次聚合完成: 今日 {payload['usage']['today']['total_tokens']} tokens, "
+                    f"24H {len(payload['model_stats'])} 模型, 额度={'有' if 'subscription' in payload else '无'}")
         except Exception as exc:
             log(f"[bridge] 首次聚合失败(后台重试): {exc}")
         threading.Thread(target=self.loop, daemon=True).start()
@@ -411,16 +481,38 @@ class Bridge:
         with self.lock:
             return self.payload_bytes
 
+    def status(self):
+        """给排障用的只读快照: 数据年龄、滑窗规模、失败计数一次看全。"""
+        payload = self.snapshot()
+        now = time.time()
+        window = [ca for ca, _ in self.aggregator.records.values()]
+        return {
+            "lastRefresh": self.last_refresh,
+            "lastRefreshAgeSec": round(now - self.last_refresh, 1) if self.last_refresh else None,
+            "failStreak": self.fail_streak,
+            "windowRecords": len(self.aggregator.records),
+            "windowOldest": min(window).isoformat() if window else None,
+            "windowNewest": max(window).isoformat() if window else None,
+            "models": len(self.aggregator.models),
+            "truncated": self.aggregator.truncated,
+            "relayAgeSec": round(now - self.relay.fetched_at, 1) if self.relay.fetched_at else None,
+            "payloadBytes": len(payload),
+        }
+
 
 def read_secret(path, name):
-    """从固件 secrets.h 读取 #define 字符串值(密钥/凭据不入库)。"""
+    """从固件 secrets.h 读取 #define 字符串值(密钥/凭据不入库)。
+
+    用 `#define NAME "..."` 精确匹配: 子串匹配会被 SPOOL_PASSWORD_HASH 这类前缀相同的
+    宏误命中, 拿到错的值。
+    """
+    pattern = re.compile(r'^\s*#define\s+' + re.escape(name) + r'\s+"([^"]*)"', re.MULTILINE)
     try:
-        for line in open(path, encoding="utf-8"):
-            if name in line and '"' in line:
-                return line.split('"')[1]
+        with open(path, encoding="utf-8") as fh:
+            found = pattern.search(fh.read())
     except OSError:
-        pass
-    return ""
+        return ""
+    return found.group(1) if found else ""
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -430,6 +522,17 @@ class Handler(BaseHTTPRequestHandler):
         path = self.path.split("?")[0]
         if path in ("/v1/usage", "/usage.json"):
             body = self.bridge.snapshot()
+            if not body:
+                # 从未拿到套餐口径时宁可回 503, 也不发一份"今日=24h"的假数据
+                self.send_error(503, "no usage data yet")
+                return
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif path == "/status":
+            body = json.dumps(self.bridge.status(), ensure_ascii=False).encode("utf-8")
             self.send_response(200)
             self.send_header("Content-Type", "application/json; charset=utf-8")
             self.send_header("Content-Length", str(len(body)))
@@ -450,26 +553,30 @@ class Handler(BaseHTTPRequestHandler):
 
 
 def main():
+    global LOG_PATH
     sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
     root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     secrets = os.path.join(root_dir, "firmware", "main", "secrets.h")
     parser = argparse.ArgumentParser(description="spool 仪表盘用量桥")
     parser.add_argument("--port", type=int, default=8789)
-    parser.add_argument("--refresh", type=float, default=30, help="聚合刷新间隔(秒)")
+    parser.add_argument("--refresh", type=float, default=20, help="聚合刷新间隔(秒), 与插电时设备轮询对齐")
     parser.add_argument("--remote-ttl", type=float, default=120, help="中转额度缓存秒数")
+    parser.add_argument("--log-file", default="", help="日志文件路径; 给出即自管轮转(2MB 保留一份)")
     parser.add_argument("--relay-url", default="https://rq.yunyc.work")
     parser.add_argument("--relay-key", default=read_secret(secrets, "CODEX_USAGE_API_KEY"))
     parser.add_argument("--spool-email", default=read_secret(secrets, "SPOOL_EMAIL"))
     parser.add_argument("--spool-password", default=read_secret(secrets, "SPOOL_PASSWORD"))
     args = parser.parse_args()
 
+    LOG_PATH = args.log_file
     if not (args.spool_password or os.path.exists(SESSION_STATE)):
-        print("[bridge] 未配置 SPOOL_PASSWORD (firmware/main/secrets.h) 且无历史会话")
+        log("[bridge] 未配置 SPOOL_PASSWORD (firmware/main/secrets.h) 且无历史会话")
     bridge = Bridge(args)
     Handler.bridge = bridge
     bridge.start()
     server = ThreadingHTTPServer(("0.0.0.0", args.port), Handler)
-    log(f"[bridge] 监听 0.0.0.0:{args.port}, 刷新 {args.refresh}s, 诗句库 {len(POEMS)} 句")
+    log(f"[bridge] 监听 0.0.0.0:{args.port}, 刷新 {args.refresh}s, 诗句 {POEM_ROTATE_SECONDS}s 一换, "
+        f"诗句库 {len(POEMS)} 句, 状态见 http://<host>:{args.port}/status")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
@@ -478,3 +585,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
