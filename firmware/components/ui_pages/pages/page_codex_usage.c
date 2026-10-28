@@ -41,15 +41,15 @@ static void format_big_tokens(uint64_t value, char *out, size_t out_len)
     }
 }
 
-/* 统计小卡：方块引导 + 小标签，大字数值，分隔线后一条注脚。 */
+/* 统计小卡：左侧竖条强调 + 小标签，大字数值，分隔线后一条注脚。 */
 static void draw_stat_card(int x, const char *label, const char *value, const char *caption)
 {
-    ui_v2_draw_card(x, 30, 112, 64);
-    st7305_fill_rect(x + 8, 40, 4, 4, true);
-    st7305_draw_text(x + 16, 38, 1, label, true);
-    st7305_draw_text(x + 8, 52, 2, value, true);
-    st7305_draw_line(x + 8, 74, x + 104, 74, true);
-    st7305_draw_text(x + 8, 78, 1, caption, true);
+    ui_v2_draw_card(x, 54, 112, 58);
+    st7305_fill_rect(x + 6, 64, 3, 38, true);
+    st7305_draw_text(x + 16, 60, 1, label, true);
+    st7305_draw_text(x + 16, 72, 2, value, true);
+    st7305_draw_line(x + 16, 92, x + 104, 92, true);
+    st7305_draw_text(x + 16, 96, 1, caption, true);
 }
 
 static void draw_stat_cards(const sys_state_codex_usage_t *usage)
@@ -73,14 +73,14 @@ static void draw_stat_cards(const sys_state_codex_usage_t *usage)
     snprintf(hit_text, sizeof(hit_text), "%d.%d%%", hit_tenths / 10, hit_tenths % 10);
 
     snprintf(caption, sizeof(caption), "IN %s", input);
-    draw_stat_card(20, "TODAY TOKENS", total, caption);
-    snprintf(caption, sizeof(caption), "CACHE %s", cached);
-    draw_stat_card(144, "CACHE HIT", hit_text, caption);
+    draw_stat_card(20, "TODAY", total, caption);
+    snprintf(caption, sizeof(caption), "CACHED %s", cached);
+    draw_stat_card(144, "CACHE", hit_text, caption);
     snprintf(caption, sizeof(caption), "REQ %lu", (unsigned long)usage->requests);
     draw_stat_card(268, "OUTPUT", output, caption);
 }
 
-/* 日额度整行：占比 | 进度条 | 已用/上限右对齐；limit 缺失时整行不画。 */
+/* 日额度整行：圆角额度条 + 已用/上限右对齐；limit 缺失时整行不画。 */
 static void draw_day_quota(int y, float cost, float limit)
 {
     char left[16], value[20];
@@ -90,11 +90,11 @@ static void draw_day_quota(int y, float cost, float limit)
     snprintf(left, sizeof(left), "DAY  %.0f%%", pct);
     if (cost >= 100.0f) snprintf(value, sizeof(value), "$%.0f/$%.0f", cost, limit);
     else snprintf(value, sizeof(value), "$%.1f/$%.0f", cost, limit);
-    st7305_draw_text(32, y, 1, left, true);
-    st7305_draw_rect(112, y, 170, 8, 1, true);
-    int bar_width = (int)(pct > 100 ? 166 : pct * 1.66f);
-    if (bar_width > 0) st7305_fill_rect(114, y + 2, bar_width, 4, true);
-    st7305_draw_text(372 - st7305_utf8_width(1, value), y, 1, value, true);
+    st7305_draw_text(32, y + 2, 1, left, true);
+    st7305_draw_round_rect(112, y, 170, 12, 4, true);
+    int bar_width = (int)(pct > 100 ? 162 : pct * 1.62f);
+    if (bar_width > 0) st7305_fill_rect(114, y + 3, bar_width, 6, true);
+    st7305_draw_text(372 - st7305_utf8_width(1, value), y + 2, 1, value, true);
 }
 
 static void format_history_cost(float value, char out[8])
@@ -115,14 +115,14 @@ static uint32_t today_ymd(const sys_state_snapshot_t *snap)
            (uint32_t)local.tm_mday;
 }
 
-/* 近 6 天消耗表（留出更松的行距）：history 日期降序，行首 > 标今天。 */
+/* 近 5 天消耗表：日期降序，今天的整行反白（比行首 > 更醒目且不占列宽）。 */
 static void draw_days(const sys_state_codex_usage_t *usage, uint32_t today)
 {
-    st7305_draw_text(32, 156, 1, "6 DAYS", true);
-    st7305_draw_line(30, 168, 202, 168, true);
-    for (int i = 0; i < usage->history_count && i < 6; i++) {
+    st7305_draw_text(32, 170, 1, "5 DAYS", true);
+    st7305_draw_line(30, 182, 202, 182, true);
+    for (int i = 0; i < usage->history_count && i < 5; i++) {
         const sys_state_codex_day_t *day = &usage->history[i];
-        int y = 176 + 17 * i;
+        int y = 190 + 17 * i;
         char date[6], cost[8], tokens[12];
         format_history_cost(day->cost, cost);
         format_tokens(day->tokens, tokens, sizeof(tokens));
@@ -130,20 +130,21 @@ static void draw_days(const sys_state_codex_usage_t *usage, uint32_t today)
                  (unsigned long)(day->date / 100U % 100U),
                  (unsigned long)(day->date % 100U));
         bool is_today = today ? (day->date == today) : (i == 0);
-        if (is_today) st7305_draw_text(27, y, 1, ">", true);
-        st7305_draw_text(38, y, 1, date, true);
-        st7305_draw_text(152 - st7305_utf8_width(1, cost), y, 1, cost, true);
-        st7305_draw_text(202 - st7305_utf8_width(1, tokens), y, 1, tokens, true);
+        bool ink = !is_today;
+        if (is_today) st7305_fill_rect(28, y - 2, 176, 12, true);
+        st7305_draw_text(38, y, 1, date, ink);
+        st7305_draw_text(152 - st7305_utf8_width(1, cost), y, 1, cost, ink);
+        st7305_draw_text(202 - st7305_utf8_width(1, tokens), y, 1, tokens, ink);
     }
 }
 
 /* 模型榜：名字 + 右对齐 token，名字下一条按占比伸缩的细条（只画现有数据）。 */
 static void draw_models(const sys_state_codex_usage_t *usage)
 {
-    st7305_draw_text(218, 156, 1, "TOP MODELS (24H)", true);
-    st7305_draw_line(216, 168, 380, 168, true);
+    st7305_draw_text(218, 170, 1, "TOP MODELS (24H)", true);
+    st7305_draw_line(216, 182, 380, 182, true);
     if (usage->model_count == 0) {
-        st7305_draw_text(218, 180, 1, "NO USAGE", true);
+        st7305_draw_text(218, 194, 1, "NO USAGE", true);
         return;
     }
     uint64_t peak = 0;
@@ -152,7 +153,7 @@ static void draw_models(const sys_state_codex_usage_t *usage)
     }
     for (int i = 0; i < usage->model_count && i < SYS_CODEX_MODEL_LIST_LEN; i++) {
         const sys_state_codex_model_t *model = &usage->models[i];
-        int y = 178 + 20 * i;
+        int y = 190 + 17 * i;
         char name[16], tokens[12];
         /* 桥接按 token 降序下发, 固件保序; 仅按 token 展示, 费用看额度卡。 */
         snprintf(name, sizeof(name), "%.13s", model->name);
@@ -172,11 +173,11 @@ static void draw_usage(const sys_state_snapshot_t *snap)
     draw_stat_cards(usage);
 
     /* 只保留日额度：中转的 weekly_limit_usd 一直是 null，周额度行已按需求下线 */
-    ui_v2_draw_card(20, 100, 360, 36);
-    draw_day_quota(114, usage->daily_cost, usage->daily_limit);
+    ui_v2_draw_card(20, 118, 360, 38);
+    draw_day_quota(126, usage->daily_cost, usage->daily_limit);
 
-    ui_v2_draw_card(20, 144, 360, 132);
-    st7305_draw_line(210, 150, 210, 270, true);
+    ui_v2_draw_card(20, 162, 360, 112);
+    st7305_draw_line(210, 166, 210, 268, true);
     draw_days(usage, today_ymd(snap));
     draw_models(usage);
 }
@@ -185,9 +186,9 @@ static void draw_usage(const sys_state_snapshot_t *snap)
 static void draw_novel(const sys_state_codex_usage_t *usage)
 {
     if (!usage->novel_line[0]) return;
-    st7305_draw_line(150, 282, 250, 282, true);
+    st7305_draw_line(150, 280, 250, 280, true);
     int x = (400 - st7305_utf8_width(1, usage->novel_line)) / 2;
-    st7305_draw_utf8(x < 0 ? 0 : x, 286, 1, usage->novel_line, true);
+    st7305_draw_utf8(x < 0 ? 0 : x, 284, 1, usage->novel_line, true);
 }
 
 static void draw(const sys_state_snapshot_t *snap)
@@ -245,5 +246,7 @@ const ui_page_t *page_codex_usage_get(void)
 {
     return &s_page;
 }
+
+
 
 
