@@ -15,11 +15,16 @@
  *
  * 布局(400×300):
  *   页头      y=0..34    状态图标(无重复标题)
- *   时间卡片  y=44..176  HH:MM 超大字(冒号每秒闪烁) + 秒 + 日期
+ *   时间卡片  y=44..176  HH:MM 超大字(冒号闪烁与秒数仅USB供电时保留) + 日期
  *   指标卡片  y=188..264 温湿度两列摘要
  */
 
 static const char *TAG = "page_home";
+
+/* 上次绘制快照：驱动分级刷新（分钟跳变/充电时秒级/数据实际变化） */
+static uint32_t s_last_version;
+static int s_last_min = -1;
+static int s_last_sec = -1;
 
 static const char *WEEKDAY_CN[] = { "星期日", "星期一", "星期二", "星期三",
                                     "星期四", "星期五", "星期六" };
@@ -82,41 +87,54 @@ static void draw_metric(int group_cx, bool is_temp, bool ok, const char *value)
     }
 }
 
-static void draw(void)
+static void draw(const sys_state_snapshot_t *snap)
 {
-    sys_state_snapshot_t snap;
-    sys_state_get_snapshot(&snap);
-
     st7305_clear(false);
-    ui_v2_draw_header("", &snap);
+    ui_v2_draw_header("", snap);
 
     struct tm t;
-    time_t now = snap.now;
+    time_t now = snap->now;
     localtime_r(&now, &t);
-    draw_time_section(&t, &snap);
+    draw_time_section(&t, snap);
 
     ui_v2_draw_card(20, 188, 360, 76);
 
     char temp_buf[16], hum_buf[16];
-    snprintf(temp_buf, sizeof(temp_buf), "%.1f", snap.temperature);
-    snprintf(hum_buf, sizeof(hum_buf), "%.0f", snap.humidity);
-    draw_metric(114, true, snap.env_ok, temp_buf);
-    draw_metric(290, false, snap.env_ok, hum_buf);
+    snprintf(temp_buf, sizeof(temp_buf), "%.1f", snap->temperature);
+    snprintf(hum_buf, sizeof(hum_buf), "%.0f", snap->humidity);
+    draw_metric(114, true, snap->env_ok, temp_buf);
+    draw_metric(290, false, snap->env_ok, hum_buf);
 
     esp_err_t err = st7305_flush();
     if (err != ESP_OK) {
         ESP_LOGW(TAG, "flush失败: %s", esp_err_to_name(err));
+        return; /* 绘制失败不记账，下一tick重试 */
     }
+    s_last_version = snap->version;
+    s_last_min = t.tm_min;
+    s_last_sec = t.tm_sec;
 }
 
 static void on_enter(void)
 {
-    draw();
+    sys_state_snapshot_t snap;
+    sys_state_get_snapshot(&snap);
+    draw(&snap);
 }
 
 static void on_tick(void)
 {
-    draw(); /* 每秒刷新以跟上时钟秒数(规范第12节: 首页时间每秒更新) */
+    sys_state_snapshot_t snap;
+    sys_state_get_snapshot(&snap);
+    struct tm t;
+    time_t now = snap.now;
+    localtime_r(&now, &t);
+    /* RLCD静态近零功耗：USB供电保留秒级跳动感；电池供电只在分钟跳变
+     * 或状态数据实际变化（sys_state仅值变化才bump version）时重绘 */
+    bool sec_refresh = snap.battery_charging && t.tm_sec != s_last_sec;
+    if (t.tm_min != s_last_min || snap.version != s_last_version || sec_refresh) {
+        draw(&snap);
+    }
 }
 
 static const ui_page_t s_page = {

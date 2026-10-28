@@ -25,4 +25,6 @@ omp-session-*.html
 
 # 临时文件与工具缓存
 tmp/
+temp/
+__pycache__/
 .reasonix/

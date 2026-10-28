@@ -1,6 +1,9 @@
 /* text_console.c - USB-Serial-JTAG 行读取 -> sys_state 文本邮箱。
- * Type-C 直连 ESP32-S3 原生 USB Serial/JTAG(烧录/日志同一口)，RX 无其他消费者。 */
+ * Type-C 直连 ESP32-S3 原生 USB Serial/JTAG(烧录/日志同一口)，RX 无其他消费者。
+ * 开端口/烧录残留常带换行；文本轮必须 `>` 前缀，避免垃圾行当用户问题。 */
 #include "text_console.h"
+
+#include <string.h>
 
 #include "driver/usb_serial_jtag.h"
 #include "esp_log.h"
@@ -9,6 +12,19 @@
 #include "sys_state.h"
 
 static const char *TAG = "text_console";
+
+static bool text_turn_payload_ok(const char *s)
+{
+    if (!s || s[0] == '\0') {
+        return false;
+    }
+    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+        if (*p < 0x20 && *p != '\t') {
+            return false;
+        }
+    }
+    return true;
+}
 
 static void text_console_task(void *arg)
 {
@@ -35,7 +51,14 @@ static void text_console_task(void *arg)
         }
         s_line[len] = '\0';
         len = 0;
-        if (!sys_state_post_text_turn(s_line)) {
+        if (s_line[0] != '>' || !text_turn_payload_ok(s_line + 1)) {
+            unsigned char c = (unsigned char)s_line[0];
+            if (c >= 0x20 && c < 0x7f) {
+                ESP_LOGW(TAG, "文本轮需以 > 开头，已丢弃");
+            }
+            continue;
+        }
+        if (!sys_state_post_text_turn(s_line + 1)) {
             ESP_LOGW(TAG, "文本邮箱占槽或过长，丢弃");
         }
     }
@@ -55,6 +78,6 @@ esp_err_t text_console_init(void)
     if (ok != pdPASS) {
         return ESP_ERR_NO_MEM;
     }
-    ESP_LOGI(TAG, "串口文本控制台就绪(回车发送一行)");
+    ESP_LOGI(TAG, "串口文本控制台就绪(>开头一行)");
     return ESP_OK;
 }

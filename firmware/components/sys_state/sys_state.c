@@ -1,5 +1,6 @@
 #include "sys_state.h"
 
+#include <math.h>
 #include <string.h>
 #include <time.h>
 
@@ -49,11 +50,18 @@ static void sys_state_apply_env(bool ok, float temperature, float humidity, time
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_state.env_ok = ok;
-    s_state.temperature = ok ? temperature : 0;
-    s_state.humidity = ok ? humidity : 0;
-    s_state.env_updated_at = updated_at;
-    bump_version_locked();
+    /* 值无实质变化不bump version，避免10s轮询触发全UI无谓重绘；
+     * 浮点带容差比较，滤掉传感器读数微抖（容差低于显示分辨率） */
+    bool changed = (s_state.env_ok != ok)
+                || (ok && (fabsf(s_state.temperature - temperature) >= 0.05f
+                        || fabsf(s_state.humidity - humidity) >= 0.5f));
+    if (changed) {
+        s_state.env_ok = ok;
+        s_state.temperature = ok ? temperature : 0;
+        s_state.humidity = ok ? humidity : 0;
+        s_state.env_updated_at = updated_at;
+        bump_version_locked();
+    }
     xSemaphoreGive(s_lock);
 }
 
@@ -63,11 +71,19 @@ static void sys_state_apply_battery(bool ok, float voltage, int percent, bool ch
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_state.battery_ok = ok;
-    s_state.battery_voltage = ok ? voltage : 0;
-    s_state.battery_percent = ok ? percent : 0;
-    s_state.battery_charging = ok && charging;
-    bump_version_locked();
+    /* 同apply_env：电压微小抖动不算变化，电量百分比与充电标志按值比较 */
+    bool charging_now = ok && charging;
+    bool changed = (s_state.battery_ok != ok)
+                || (s_state.battery_charging != charging_now)
+                || (ok && (s_state.battery_percent != percent
+                        || fabsf(s_state.battery_voltage - voltage) >= 0.01f));
+    if (changed) {
+        s_state.battery_ok = ok;
+        s_state.battery_voltage = ok ? voltage : 0;
+        s_state.battery_percent = ok ? percent : 0;
+        s_state.battery_charging = charging_now;
+        bump_version_locked();
+    }
     xSemaphoreGive(s_lock);
 }
 
@@ -77,8 +93,10 @@ static void sys_state_apply_wifi(bool connected)
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_state.wifi_connected = connected;
-    bump_version_locked();
+    if (s_state.wifi_connected != connected) {
+        s_state.wifi_connected = connected;
+        bump_version_locked();
+    }
     xSemaphoreGive(s_lock);
 }
 
@@ -88,8 +106,10 @@ static void sys_state_apply_sd(bool mounted)
         return;
     }
     xSemaphoreTake(s_lock, portMAX_DELAY);
-    s_state.sd_mounted = mounted;
-    bump_version_locked();
+    if (s_state.sd_mounted != mounted) {
+        s_state.sd_mounted = mounted;
+        bump_version_locked();
+    }
     xSemaphoreGive(s_lock);
 }
 
@@ -139,6 +159,35 @@ void sys_state_apply_weather(bool available, float temperature, int humidity,
     xSemaphoreGive(s_lock);
 }
 
+void sys_state_apply_codex_usage(const sys_state_codex_usage_t *usage)
+{
+    if (!s_lock || !usage) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_state.codex_usage = *usage;
+    if (s_state.codex_usage.model_count < 0) s_state.codex_usage.model_count = 0;
+    if (s_state.codex_usage.model_count > SYS_CODEX_MODEL_LIST_LEN) {
+        s_state.codex_usage.model_count = SYS_CODEX_MODEL_LIST_LEN;
+    }
+    for (int i = 0; i < s_state.codex_usage.model_count; i++) {
+        s_state.codex_usage.models[i].name[SYS_CODEX_MODEL_MAX - 1] = '\0';
+    }
+    if (s_state.codex_usage.history_count < 0) s_state.codex_usage.history_count = 0;
+    if (s_state.codex_usage.history_count > SYS_CODEX_HISTORY_LEN) {
+        s_state.codex_usage.history_count = SYS_CODEX_HISTORY_LEN;
+    }
+    s_state.codex_usage.novel_line[sizeof(s_state.codex_usage.novel_line) - 1] = '\0';
+    bump_version_locked();
+    xSemaphoreGive(s_lock);
+}
+
+void sys_state_mark_codex_usage_unavailable(void)
+{
+    if (!s_lock) return;
+    xSemaphoreTake(s_lock, portMAX_DELAY);
+    s_state.codex_usage.available = false;
+    bump_version_locked();
+    xSemaphoreGive(s_lock);
+}
 
 void sys_state_apply_voice(sys_voice_phase_t phase, uint32_t turn_id, const char *reason)
 {
@@ -297,8 +346,8 @@ bool sys_state_consume_text_turn(char *out, size_t out_len)
 }
 
 /* 没有专属后台任务的"环境状态"由这里统一采集：瞬时温湿度、电池、WiFi连接、
- * SD挂载。和 env_logger(60s历史采样)、weather_client
- * (各自mDNS+HTTP轮询)相互独立，互不阻塞——本任务只做本地读取，没有网络IO */
+ * SD挂载。和 env_logger(60s历史采样)、weather_client、codex_usage_client
+ * 各自的HTTP轮询相互独立，互不阻塞——本任务只做本地读取，没有网络IO */
 static void poll_task(void *arg)
 {
     (void)arg;

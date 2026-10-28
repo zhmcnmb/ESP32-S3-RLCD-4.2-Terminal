@@ -98,6 +98,9 @@ static esp_err_t wifi_start_sta(const char *ssid, const char *password)
     ESP_RETURN_ON_ERROR(esp_wifi_set_mode(WIFI_MODE_STA), TAG, "wifi mode");
     ESP_RETURN_ON_ERROR(esp_wifi_set_config(WIFI_IF_STA, &wifi_cfg), TAG, "wifi config");
     ESP_RETURN_ON_ERROR(esp_wifi_start(), TAG, "wifi start");
+    /* 省电：MAX_MODEM拉长modem sleep驻留，轮询类业务(TLS请求)无感，
+     * 配合auto light sleep(见app_runtime的esp_pm_configure)效果更好 */
+    ESP_RETURN_ON_ERROR(esp_wifi_set_ps(WIFI_PS_MAX_MODEM), TAG, "wifi ps");
     return ESP_OK;
 }
 

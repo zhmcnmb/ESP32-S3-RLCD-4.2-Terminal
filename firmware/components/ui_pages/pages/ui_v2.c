@@ -1,5 +1,8 @@
 #include "ui_v2.h"
 
+#include <stdio.h>
+#include <time.h>
+
 #include "display_st7305.h"
 #include "ui_icons.h"
 #define MARGIN 20
@@ -11,6 +14,13 @@ void ui_v2_draw_header(const char *title, const sys_state_snapshot_t *snap)
     if (title && title[0]) {
         st7305_fill_rect(MARGIN, 8, 4, 16, true);
         st7305_draw_utf8(MARGIN + 12, 8, 1, title, true);
+
+        struct tm local;
+        char clock[6];
+        time_t now = snap->now;
+        localtime_r(&now, &local);
+        snprintf(clock, sizeof(clock), "%02d:%02d", local.tm_hour, local.tm_min);
+        st7305_draw_text(160, 8, 2, clock, true);
     }
 
     /* 状态图标保持固定位置；无论页面内容如何变化，设备自身状态都无需抢占主视觉。 */

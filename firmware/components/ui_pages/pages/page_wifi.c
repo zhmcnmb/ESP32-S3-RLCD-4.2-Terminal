@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "display_st7305.h"
 #include "esp_log.h"
@@ -22,6 +23,7 @@ static const char *TAG = "page_wifi";
 #define PWD_SHOW_MAX 40 /* 密码明文窗口，超出显示末40位 */
 
 static uint32_t s_last_version;
+static time_t s_last_minute;
 
 static void draw_off(const sys_state_snapshot_t *snap)
 {
@@ -156,6 +158,7 @@ static void draw(const sys_state_snapshot_t *snap)
         return;
     }
     s_last_version = snap->version;
+    s_last_minute = snap->now / 60;
 }
 
 static void on_enter(void)
@@ -163,6 +166,7 @@ static void on_enter(void)
     sys_state_snapshot_t snap;
     sys_state_get_snapshot(&snap);
     s_last_version = 0;
+    s_last_minute = -1;
     draw(&snap);
 }
 
@@ -170,7 +174,7 @@ static void on_tick(void)
 {
     sys_state_snapshot_t snap;
     sys_state_get_snapshot(&snap);
-    if (snap.version != s_last_version) {
+    if (snap.version != s_last_version || snap.now / 60 != s_last_minute) {
         draw(&snap);
     }
 }
