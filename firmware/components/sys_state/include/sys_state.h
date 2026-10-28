@@ -75,8 +75,6 @@ typedef struct {
     bool available;
     float daily_cost;
     float daily_limit;
-    float weekly_usage; /* 套餐周额度已用；线上缺失/为 null 时置 0 */
-    float weekly_limit; /* 0 表示无周额度，页面不绘制 WEEK 行 */
     uint64_t input_tokens;
     uint64_t cached_tokens;
     uint64_t output_tokens;
@@ -210,6 +208,11 @@ bool sys_state_consume_voice_cancel(void);
 /* 页面提交手动触发请求(push-to-talk); voice_assistant 空闲时轮询 consume 后清位 */
 void sys_state_request_voice_trigger(void);
 bool sys_state_consume_voice_trigger(void);
+
+/* 页面提交"立刻刷新用量"请求；codex_usage_client 轮询 consume 后清位。
+ * 用于进入用量页时缩短数据陈旧窗口，避免等满一个轮询周期。 */
+void sys_state_request_codex_refresh(void);
+bool sys_state_consume_codex_refresh(void);
 
 /* scheduler 投递到期提醒；上一条尚未播出时返回false，调用方下秒重试。 */
 bool sys_state_post_reminder(const char *text);

@@ -25,6 +25,8 @@ omp-session-*.html
 
 # 临时文件与工具缓存
 tmp/
+# idf.py export 失败时会在仓库根留下 tmp<随机串>idf_<pid> 临时文件
+tmp*idf_*
 temp/
 __pycache__/
 .reasonix/

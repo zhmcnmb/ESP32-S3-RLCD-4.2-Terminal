@@ -145,7 +145,7 @@ typedef struct {
 | 任务 | 栈 | 优先级 | 组件 |
 |---|---|---|---|
 | main_task | 4096 | 1 | app_main（启动后即退出；SD恢复+agent初始化调用链需保留足够栈余量） |
-| input_task | 2048 | 4 | input_manager（GPIO负沿中断唤醒；按下期间30ms步进消抖+长短按判定，释放后回阻塞） |
+| input_task | 2048 | 4 | input_manager（30ms 轮询消抖 + 长短按判定；**不要**改回"中断唤醒 + `gpio_wakeup_enable(LOW_LEVEL)`"：那会把引脚中断改成电平触发，ISR 不清电平就会中断风暴，按住键几秒即 interrupt WDT 重启） |
 | ui_task | 4096 | 5 | ui_manager（消费input_manager语义事件；无输入时1s周期tick） |
 | sys_state_task | 3072 | 2 | sys_state（10s轮询瞬时温湿度/电池/WiFi/SD状态，写入共享快照） |
 | text_console | 3072 | 2 | text_console（USB-Serial-JTAG RX 阻塞读一行文本，投 sys_state 文本邮箱；验收测试入口，无网络/文件IO） |
