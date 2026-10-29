@@ -27,7 +27,7 @@ static void draw_weather_data(const sys_state_snapshot_t *snap)
     char temp_buf[8];
     snprintf(temp_buf, sizeof(temp_buf), "%.0f", snap->weather_temperature);
 
-    ui_v2_draw_card(20, 44, 360, 124);
+    /* 温度与图形不要外框：大数字和天气图标本身就是主视觉 */
     st7305_draw_text(44, 64, 8, temp_buf, true);
     int temp_w = 64 * (int)strlen(temp_buf);
     ui_v2_draw_temp_unit(44 + temp_w + 10, 68);
@@ -42,9 +42,13 @@ static void draw_weather_data(const sys_state_snapshot_t *snap)
         st7305_draw_utf8(x > 216 ? x : 216, 122, 1, snap->weather_condition, true);
     }
 
-    ui_v2_draw_card(20, 180, 360, 72);
+    /* 主视觉与摘要之间只留一条分隔线 */
+    st7305_draw_line(20, 172, 380, 172, true);
 
-    /* 两组摘要各占卡片一半，组内实测宽度后居中 */
+    /* 两组摘要各占一半，组内实测宽度后居中；上方补小标签建立层级 */
+    st7305_draw_text(110 - 5 * 4, 186, 1, "HUMID", true);
+    st7305_draw_text(290 - 4 * 4, 186, 1, "WIND", true);
+
     char humidity[8];
     snprintf(humidity, sizeof(humidity), "%d%%", snap->weather_humidity);
     int hum_w = 32 * (int)strlen(humidity);

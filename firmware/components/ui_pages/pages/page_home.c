@@ -33,7 +33,7 @@ static void draw_time_section(const struct tm *t, const sys_state_snapshot_t *sn
 {
     char buf[16];
 
-    ui_v2_draw_card(20, 44, 360, 132);
+    /* 时间不要外框：大数字本身就是主视觉，边框只会切割视线 */
 
     /* 冒号每秒闪烁：空格与冒号同宽，布局不抖动 */
     snprintf(buf, sizeof(buf), "%02d%s%02d", t->tm_hour,
@@ -58,12 +58,18 @@ static void draw_time_section(const struct tm *t, const sys_state_snapshot_t *sn
         st7305_fill_rect(bx, 139, bw + 12, 18, true);
         st7305_draw_utf8(bx + 6, 140, 1, bad, false);
     }
+
+    /* 时间与指标之间只留一条分隔线，代替原来的两张卡片 */
+    st7305_draw_line(20, 176, 380, 176, true);
 }
 
-/* 图标承担指标语义，组内实测宽度后以group_cx为心水平居中。 */
+/* 指标组：上方小标签 + 图标 + 大数值，组内实测宽度后以 group_cx 为心水平居中。 */
 static void draw_metric(int group_cx, bool is_temp, bool ok, const char *value)
 {
     const char *v = ok ? value : "--";
+    const char *label = is_temp ? "TEMP" : "HUMID";
+    st7305_draw_text(group_cx - (int)strlen(label) * 4, 190, 1, label, true);
+
     int vw = 32 * (int)strlen(v);
     int total = 12 + 10 + vw + (ok ? 6 + (is_temp ? 27 : 22) : 0);
     int x = group_cx - total / 2;
@@ -96,8 +102,6 @@ static void draw(const sys_state_snapshot_t *snap)
     time_t now = snap->now;
     localtime_r(&now, &t);
     draw_time_section(&t, snap);
-
-    ui_v2_draw_card(20, 188, 360, 76);
 
     char temp_buf[16], hum_buf[16];
     snprintf(temp_buf, sizeof(temp_buf), "%.1f", snap->temperature);

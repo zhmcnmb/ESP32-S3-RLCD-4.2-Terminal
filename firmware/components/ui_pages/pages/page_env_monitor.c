@@ -28,16 +28,8 @@ static void draw_time_label(int x, int y, time_t timestamp)
     st7305_draw_text(x, y, 1, text, true);
 }
 
-/* 反白标签提供趋势带的固定锚点，当前值紧随其后而不另占一块区域。 */
-static int draw_band_badge(int y, const char *label)
-{
-    int label_w = st7305_utf8_width(1, label);
-    st7305_fill_rect(32, y + 8, label_w + 16, 18, true);
-    st7305_draw_utf8(40, y + 9, 1, label, false);
-    return 32 + label_w + 16;
-}
-
-static void draw_band_header(int y, int badge_end,
+/* 波段头部：左侧小标签 + 右侧当前值，不再用反白块抢占视觉。 */
+static void draw_band_header(int y, const char *label,
                              const sys_state_env_sample_t *sample, bool is_temp)
 {
     char value[16];
@@ -47,13 +39,16 @@ static void draw_band_header(int y, int badge_end,
         snprintf(value, sizeof(value), "%.0f", sample->humidity);
     }
 
-    int value_x = badge_end + 14;
-    st7305_draw_text(value_x, y + 5, 3, value, true);
-    int value_end = value_x + 24 * (int)strlen(value);
+    st7305_draw_utf8(32, y + 8, 1, label, true);
+
+    int unit_w = is_temp ? 27 : 18;
+    int value_right = 368 - unit_w - 6;
+    int vw = 16 * (int)strlen(value);
+    st7305_draw_text(value_right - vw, y + 5, 2, value, true);
     if (is_temp) {
-        ui_v2_draw_temp_unit(value_end + 6, y + 8);
+        ui_v2_draw_temp_unit(value_right + 6, y + 8);
     } else {
-        st7305_draw_text(value_end + 6, y + 13, 2, "%", true);
+        st7305_draw_text(value_right + 6, y + 8, 2, "%", true);
     }
 }
 
@@ -62,14 +57,14 @@ static void draw_trend_band(int y, const char *label,
                             const sys_state_env_sample_t *samples, int n, bool is_temp)
 {
     ui_v2_draw_card(20, y, 360, 116);
-    int badge_end = draw_band_badge(y, label);
     if (n < 2) {
         char msg[32];
         snprintf(msg, sizeof(msg), "正在积累 %d/2", n);
-        st7305_draw_utf8(badge_end + 14, y + 9, 1, msg, true);
+        st7305_draw_utf8(32, y + 8, 1, label, true);
+        st7305_draw_utf8(80, y + 8, 1, msg, true);
         return;
     }
-    draw_band_header(y, badge_end, &samples[n - 1], is_temp);
+    draw_band_header(y, label, &samples[n - 1], is_temp);
 
     float min_v = is_temp ? samples[0].temperature : samples[0].humidity;
     float max_v = min_v;

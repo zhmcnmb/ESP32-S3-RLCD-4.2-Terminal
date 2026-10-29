@@ -164,9 +164,10 @@ static void draw_usage(const sys_state_snapshot_t *snap)
     const sys_state_codex_usage_t *usage = &snap->codex_usage;
     draw_stat_cards(usage);
 
-    /* 只保留日额度：中转的 weekly_limit_usd 一直是 null，周额度行已按需求下线 */
+    /* 只保留日额度：中转的 weekly_limit_usd 一直是 null，周额度行已按需求下线。
+     * 卡高 34、内容高 12，起始 y = 126 + (34-12)/2 = 137，内容在卡内垂直居中。 */
     ui_v2_draw_card(20, 126, 360, 34);
-    draw_day_quota(132, usage->daily_cost, usage->daily_limit);
+    draw_day_quota(137, usage->daily_cost, usage->daily_limit);
 
     ui_v2_draw_card(20, 166, 360, 114);
     draw_days(usage, today_ymd(snap));

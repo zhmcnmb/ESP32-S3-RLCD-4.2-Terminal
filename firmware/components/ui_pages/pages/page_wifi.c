@@ -27,7 +27,7 @@ static time_t s_last_minute;
 
 static void draw_off(const sys_state_snapshot_t *snap)
 {
-    ui_v2_draw_card(20, 60, 360, 120);
+    /* 状态与 SSID 本身就是主信息，不再外套卡片 */
     st7305_draw_utf8(40, 84, 1, snap->wifi_connected ? "已连接" : "未连接", true);
     st7305_draw_utf8(40, 116, 2, snap->wifi_setup.ssid[0] ? snap->wifi_setup.ssid : "--", true);
     st7305_draw_utf8(40, 152, 1, "BOOT短按 扫描网络", true);
