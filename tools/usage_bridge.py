@@ -263,10 +263,10 @@ class RelayClient:
         return self.data
 
 
-class ModelAggregator24H:
-    """过去 24 小时模型用量精确滑窗聚合器。
+class ModelAggregatorToday:
+    """当日（本地 00:00 起）模型用量聚合器。
 
-    从 spool /api/v1/usage 拉取明细，维护 24 小时内存滑窗。服务端支持 start_date
+    从 spool /api/v1/usage 拉取明细，只保留设备所在时区"今天"的记录。服务端支持 start_date
     过滤（实测 start_date=2026-10-27 把 24175 条筛到 696 条）与 page_size=500，
     所以冷启动按日期过滤 + 大页拉取，1~2 页即可覆盖窗口，不再靠 2000 条硬上限。
     """
@@ -284,7 +284,7 @@ class ModelAggregator24H:
 
     def _fetch_new(self, cutoff, full_scan):
         """按时间倒序翻页，撞到过期记录或已知 id 即停；返回新增记录。"""
-        start_date = (datetime.now(TZ_CN) - timedelta(hours=24)).date().isoformat()
+        start_date = datetime.now(TZ_CN).date().isoformat()
         new_items = []
         page = 1
         exhausted = False
@@ -320,7 +320,7 @@ class ModelAggregator24H:
         return new_items, exhausted
 
     def update(self):
-        cutoff = datetime.now(timezone.utc) - timedelta(hours=24)
+        cutoff = datetime.now(TZ_CN).replace(hour=0, minute=0, second=0, microsecond=0)
         now = time.time()
         full_scan = now - self.last_full_scan >= self.FULL_RESCAN_SECONDS
         new_items, exhausted = self._fetch_new(cutoff, full_scan)
@@ -328,16 +328,12 @@ class ModelAggregator24H:
             self.last_full_scan = now
         self.truncated = exhausted
         if exhausted:
-            log(f"[agg] 24h 窗口超过 {self.MAX_PAGES * self.PAGE_SIZE} 条记录，结果可能偏少")
+            log(f"[agg] 当日记录超过 {self.MAX_PAGES * self.PAGE_SIZE} 条，结果可能偏少")
 
         for rec_id, ca, it in new_items:
             self.records[rec_id] = (ca, it)
 
-
-        for rec_id, ca, it in new_items:
-            self.records[rec_id] = (ca, it)
-
-        # 剔除超过 24h 的过期记录
+        # 剔除今天 00:00 之前的记录
         expired = [rid for rid, (ca, _) in self.records.items() if ca < cutoff]
         for rid in expired:
             del self.records[rid]
@@ -376,10 +372,10 @@ class ModelAggregator24H:
 
 
 def build_payload(models, relay, poem, fresh=True):
-    """按固件解析契约拼 JSON; 模型=24小时滑窗, 今日token/额度/逐日=中转套餐, 底行=诗句。
+    """按固件解析契约拼 JSON; 模型=当日明细聚合, 今日token/额度/逐日=中转套餐, 底行=诗句。
 
-    没有中转套餐数据时返回 None: 24h 滑窗的合计不能冒充"今日"——两个口径不同窗口,
-    宁可让设备保持 WAIT/OLD, 也不要把 24h 数字写成今日。
+    没有中转套餐数据时返回 None: 模型榜的合计不能冒充"今日"——两个口径不同窗口,
+    宁可让设备保持 WAIT/OLD, 也不要把别的窗口数字写成今日。
     """
     if not (relay and relay.get("usage") and relay["usage"].get("today")):
         return None
@@ -410,7 +406,7 @@ def build_payload(models, relay, poem, fresh=True):
 class Bridge:
     def __init__(self, args):
         self.spool = SpoolSession(args.relay_url, args.spool_email, args.spool_password)
-        self.aggregator = ModelAggregator24H(self.spool)
+        self.aggregator = ModelAggregatorToday(self.spool)
         self.relay = RelayClient(args.relay_url, args.relay_key, args.remote_ttl)
         self.refresh = args.refresh
         self.lock = threading.Lock()
@@ -472,7 +468,7 @@ class Bridge:
             payload = self.refresh_once()
             if payload:
                 log(f"[bridge] 首次聚合完成: 今日 {payload['usage']['today']['total_tokens']} tokens, "
-                    f"24H {len(payload['model_stats'])} 模型, 额度={'有' if 'subscription' in payload else '无'}")
+                    f"当日 {len(payload['model_stats'])} 模型, 额度={'有' if 'subscription' in payload else '无'}")
         except Exception as exc:
             log(f"[bridge] 首次聚合失败(后台重试): {exc}")
         threading.Thread(target=self.loop, daemon=True).start()
@@ -523,7 +519,7 @@ class Handler(BaseHTTPRequestHandler):
         if path in ("/v1/usage", "/usage.json"):
             body = self.bridge.snapshot()
             if not body:
-                # 从未拿到套餐口径时宁可回 503, 也不发一份"今日=24h"的假数据
+                # 从未拿到套餐口径时宁可回 503, 也不发一份"今日=别处数据"的假数据
                 self.send_error(503, "no usage data yet")
                 return
             self.send_response(200)
@@ -585,5 +581,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 
 
