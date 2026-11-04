@@ -371,6 +371,38 @@ class ModelAggregatorToday:
         return models
 
 
+HISTORY_DAYS = 5  # 设备 5 天表用的连续自然日条数
+
+
+def build_daily_series(upstream_days, today_key):
+    """把上游的逐日数据补齐成连续 N 天（含今天），缺的日子填 0。
+
+    上游只返回有调用的日期（实测跳过空闲日），设备若直接展示会出现
+    "11/01 之后直接 11/03"这种断层，而且今天未必落在可见行里。
+    这里按日期倒序生成连续序列，保证首行永远是今天。
+    """
+    by_date = {}
+    for item in upstream_days or []:
+        date = item.get("date")
+        if date:
+            by_date[date] = item
+    series = []
+    today = datetime.strptime(today_key, "%Y-%m-%d") if today_key else datetime.now(TZ_CN).date()
+    today = today.date() if isinstance(today, datetime) else today
+    for offset in range(HISTORY_DAYS):
+        day = today - timedelta(days=offset)
+        key = day.isoformat()
+        item = by_date.get(key)
+        if item:
+            series.append(item)
+        else:
+            series.append({
+                "date": key, "requests": 0, "input_tokens": 0, "output_tokens": 0,
+                "cache_read_tokens": 0, "total_tokens": 0, "cost": 0,
+            })
+    return series
+
+
 def build_payload(models, upstream, poem, fresh=True):
     """按固件解析契约拼 JSON; 模型=当日明细聚合, 今日token/额度/逐日=上游套餐, 底行=诗句。
 
@@ -394,7 +426,7 @@ def build_payload(models, upstream, poem, fresh=True):
         "isValid": bool(fresh),
         "usage": {"today": today},
         "model_stats": models,
-        "daily_usage": upstream.get("daily_usage") or [],
+        "daily_usage": build_daily_series(upstream.get("daily_usage"), None),
     }
     if upstream.get("subscription"):
         payload["subscription"] = upstream["subscription"]

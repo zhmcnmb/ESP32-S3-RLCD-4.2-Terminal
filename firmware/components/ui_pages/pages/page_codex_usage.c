@@ -99,11 +99,12 @@ static void draw_day_quota(int y, float cost, float limit)
     st7305_draw_text(372 - st7305_utf8_width(1, value), y + 2, 1, value, true);
 }
 
+/* 表格里的金额：保留一位小数，与额度卡的口径一致（≥100 也只舍到 .1，
+ * 避免出现卡片 $214.5、表格 $215 这种对不上的观感）。 */
 static void format_history_cost(float value, char out[8])
 {
-    if (value >= 100.0f) snprintf(out, 8, "$%.0f", value);
-    else if (value >= 10.0f) snprintf(out, 8, "$%.1f", value);
-    else snprintf(out, 8, "$%.2f", value);
+    if (value >= 1000.0f) snprintf(out, 8, "$%.0f", value);
+    else snprintf(out, 8, "$%.1f", value);
 }
 
 /* 设备本地日期(yyyymmdd); 时间未同步返回 0, 由调用方回退到"首行即今日"的旧行为。 */
@@ -117,7 +118,8 @@ static uint32_t today_ymd(const sys_state_snapshot_t *snap)
            (uint32_t)local.tm_mday;
 }
 
-/* 近 5 天消耗表：日期降序，今天的整行反白；不画表头分隔线，靠留白分组。 */
+/* 近 5 天消耗表：日期降序，今天的整行反白。三列用固定右边界分开：
+ * 日期左对齐 38、金额右对齐 140、token 右对齐 202，中间各留 14px 空隙。 */
 static void draw_days(const sys_state_codex_usage_t *usage, uint32_t today)
 {
     st7305_draw_text(32, 174, 1, "5 DAYS", true);
@@ -132,9 +134,9 @@ static void draw_days(const sys_state_codex_usage_t *usage, uint32_t today)
                  (unsigned long)(day->date % 100U));
         bool is_today = today ? (day->date == today) : (i == 0);
         bool ink = !is_today;
-        if (is_today) st7305_fill_rect(28, y - 2, 176, 12, true);
+        if (is_today) st7305_fill_rect(28, y - 2, 180, 12, true);
         st7305_draw_text(38, y, 1, date, ink);
-        st7305_draw_text(152 - st7305_utf8_width(1, cost), y, 1, cost, ink);
+        st7305_draw_text(140 - st7305_utf8_width(1, cost), y, 1, cost, ink);
         st7305_draw_text(202 - st7305_utf8_width(1, tokens), y, 1, tokens, ink);
     }
 }
