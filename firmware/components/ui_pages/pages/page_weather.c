@@ -45,9 +45,11 @@ static void draw_weather_data(const sys_state_snapshot_t *snap)
     /* 主视觉与摘要之间只留一条分隔线 */
     st7305_draw_line(20, 172, 380, 172, true);
 
-    /* 两组摘要各占一半，组内实测宽度后居中；上方补小标签建立层级 */
-    st7305_draw_text(110 - 5 * 4, 186, 1, "HUMID", true);
-    st7305_draw_text(290 - 4 * 4, 186, 1, "WIND", true);
+    /* 两组摘要各占一半，组内实测宽度后居中；上方补中文小标签建立层级 */
+    int hum_label_w = st7305_utf8_width(1, "湿度");
+    st7305_draw_utf8(110 - hum_label_w / 2, 178, 1, "湿度", true);
+    int wind_label_w = st7305_utf8_width(1, "风力");
+    st7305_draw_utf8(290 - wind_label_w / 2, 178, 1, "风力", true);
 
     char humidity[8];
     snprintf(humidity, sizeof(humidity), "%d%%", snap->weather_humidity);

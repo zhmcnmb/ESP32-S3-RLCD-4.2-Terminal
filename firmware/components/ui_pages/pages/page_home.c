@@ -67,8 +67,9 @@ static void draw_time_section(const struct tm *t, const sys_state_snapshot_t *sn
 static void draw_metric(int group_cx, bool is_temp, bool ok, const char *value)
 {
     const char *v = ok ? value : "--";
-    const char *label = is_temp ? "TEMP" : "HUMID";
-    st7305_draw_text(group_cx - (int)strlen(label) * 4, 190, 1, label, true);
+    const char *label = is_temp ? "温度" : "湿度";
+    int label_w = st7305_utf8_width(1, label);
+    st7305_draw_utf8(group_cx - label_w / 2, 184, 1, label, true);
 
     int vw = 32 * (int)strlen(v);
     int total = 12 + 10 + vw + (ok ? 6 + (is_temp ? 27 : 22) : 0);

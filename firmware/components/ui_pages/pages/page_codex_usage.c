@@ -1,4 +1,4 @@
-#include <stdio.h>
+﻿#include <stdio.h>
 #include <time.h>
 
 #include "display_st7305.h"
@@ -45,9 +45,9 @@ static void format_big_tokens(uint64_t value, char *out, size_t out_len)
 static void draw_metric(int x, const char *label, const char *value, int scale,
                         const char *caption)
 {
-    st7305_draw_text(x, 52, 1, label, true);
-    st7305_draw_text(x, 90 - 8 * scale, scale, value, true);
-    st7305_draw_text(x, 100, 1, caption, true);
+    st7305_draw_utf8(x, 44, 1, label, true);                  /* 16px 行高：44..60 */
+    st7305_draw_text(x, 90 - 8 * scale, scale, value, true);  /* 数值底边对齐 90 */
+    st7305_draw_utf8(x, 96, 1, caption, true);                /* 96..112，与数值留 6px */
 }
 
 /* 顶部统计区：TODAY 用大号(scale3)做主视觉，CACHE/OUTPUT 用 scale2 做次级。
@@ -72,27 +72,28 @@ static void draw_stat_cards(const sys_state_codex_usage_t *usage)
     if (hit_tenths < 0) hit_tenths = 0;
     snprintf(hit_text, sizeof(hit_text), "%d.%d%%", hit_tenths / 10, hit_tenths % 10);
 
-    snprintf(caption, sizeof(caption), "IN %s", input);
-    draw_metric(28, "TODAY", total, 3, caption);
-    snprintf(caption, sizeof(caption), "CACHED %s", cached);
-    draw_metric(176, "CACHE", hit_text, 2, caption);
-    snprintf(caption, sizeof(caption), "REQ %lu", (unsigned long)usage->requests);
-    draw_metric(280, "OUTPUT", output, 2, caption);
+    snprintf(caption, sizeof(caption), "输入 %s", input);
+    draw_metric(28, "今日", total, 3, caption);
+    snprintf(caption, sizeof(caption), "缓存 %s", cached);
+    draw_metric(176, "缓存", hit_text, 2, caption);
+    snprintf(caption, sizeof(caption), "请求 %lu", (unsigned long)usage->requests);
+    draw_metric(280, "输出", output, 2, caption);
 
     st7305_draw_line(20, 120, 380, 120, true);
 }
 
-/* 日额度整行：圆角额度条 + 已用/上限右对齐；limit 缺失时整行不画。 */
+/* 日额度整行：圆角额度条 + 已用/上限右对齐；limit 缺失时整行不画。
+ * 左侧标签走 utf8（16px 高），与 12px 高的额度条垂直居中对齐。 */
 static void draw_day_quota(int y, float cost, float limit)
 {
-    char left[16], value[20];
+    char left[24], value[20];
     if (limit <= 0) return;
     float pct = cost / limit * 100;
     if (pct > 999) pct = 999;
-    snprintf(left, sizeof(left), pct > 0.0f && pct < 1.0f ? "DAY  %.1f%%" : "DAY  %.0f%%", pct);
+    snprintf(left, sizeof(left), pct > 0.0f && pct < 1.0f ? "今日 %.1f%%" : "今日 %.0f%%", pct);
     if (cost >= 100.0f) snprintf(value, sizeof(value), "$%.0f/$%.0f", cost, limit);
     else snprintf(value, sizeof(value), "$%.1f/$%.0f", cost, limit);
-    st7305_draw_text(32, y + 2, 1, left, true);
+    st7305_draw_utf8(32, y - 1, 1, left, true);
     st7305_draw_round_rect(112, y, 170, 12, 4, true);
     int bar_width = (int)(pct > 100 ? 162 : pct * 1.62f);
     if (bar_width > 0) st7305_fill_rect(114, y + 3, bar_width, 6, true);
@@ -122,7 +123,7 @@ static uint32_t today_ymd(const sys_state_snapshot_t *snap)
  * 日期左对齐 38、金额右对齐 140、token 右对齐 202，中间各留 14px 空隙。 */
 static void draw_days(const sys_state_codex_usage_t *usage, uint32_t today)
 {
-    st7305_draw_text(32, 174, 1, "5 DAYS", true);
+    st7305_draw_utf8(32, 172, 1, "近五天", true);
     for (int i = 0; i < usage->history_count && i < 5; i++) {
         const sys_state_codex_day_t *day = &usage->history[i];
         int y = 192 + 17 * i;
@@ -144,9 +145,9 @@ static void draw_days(const sys_state_codex_usage_t *usage, uint32_t today)
 /* 模型榜：名字 + 右对齐 token；不画占比条，靠右对齐的数字比较大小。 */
 static void draw_models(const sys_state_codex_usage_t *usage)
 {
-    st7305_draw_text(218, 174, 1, "TOP MODELS (TODAY)", true);
+    st7305_draw_utf8(218, 172, 1, "今日模型", true);
     if (usage->model_count == 0) {
-        st7305_draw_text(218, 196, 1, "NO USAGE", true);
+        st7305_draw_utf8(218, 194, 1, "暂无数据", true);
         return;
     }
     for (int i = 0; i < usage->model_count && i < SYS_CODEX_MODEL_LIST_LEN; i++) {
@@ -181,7 +182,7 @@ static void draw_novel(const sys_state_codex_usage_t *usage)
 {
     if (!usage->novel_line[0]) return;
     int x = (400 - st7305_utf8_width(1, usage->novel_line)) / 2;
-    st7305_draw_utf8(x < 0 ? 0 : x, 288, 1, usage->novel_line, true);
+    st7305_draw_utf8(x < 0 ? 0 : x, 282, 1, usage->novel_line, true);
 }
 
 static void draw(const sys_state_snapshot_t *snap)
