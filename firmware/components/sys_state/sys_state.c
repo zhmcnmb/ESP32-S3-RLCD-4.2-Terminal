@@ -5,6 +5,10 @@
 #include <time.h>
 
 #include "battery.h"
+#include "esp_app_desc.h"
+#include "esp_heap_caps.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/semphr.h"
 #include "freertos/task.h"
@@ -43,6 +47,16 @@ void sys_state_get_snapshot(sys_state_snapshot_t *out)
     /* 时间开销极低且没有专属后台任务，直接现读，永远反映"此刻" */
     out->time_valid = time_service_is_valid();
     out->now = time(NULL);
+    /* 资源水位同理：几微秒的调用，状态页需要"此刻"的数值而不是 300s 前的日志 */
+    out->uptime_s = (uint32_t)(esp_timer_get_time() / 1000000LL);
+    out->heap_free = (uint32_t)esp_get_free_heap_size();
+    out->heap_min = (uint32_t)esp_get_minimum_free_heap_size();
+    out->psram_free = (uint32_t)heap_caps_get_free_size(MALLOC_CAP_SPIRAM);
+    out->psram_min = (uint32_t)heap_caps_get_minimum_free_size(MALLOC_CAP_SPIRAM);
+    out->reset_reason = (int)esp_reset_reason();
+    out->wifi_rssi = out->wifi_connected ? net_get_rssi() : 0;
+    const esp_app_desc_t *app = esp_app_get_description();
+    out->fw_version = app ? app->version : "-";
 }
 
 static void sys_state_apply_env(bool ok, float temperature, float humidity, time_t updated_at)

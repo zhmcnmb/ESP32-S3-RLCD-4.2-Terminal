@@ -286,3 +286,12 @@ esp_err_t net_credentials_restore(void)
     }
     return ESP_OK;
 }
+
+int8_t net_get_rssi(void)
+{
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) != ESP_OK) {
+        return 0;
+    }
+    return ap.rssi;
+}

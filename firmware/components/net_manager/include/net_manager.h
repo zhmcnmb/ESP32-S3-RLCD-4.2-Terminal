@@ -49,3 +49,6 @@ esp_err_t net_credentials_restore(void);
 #ifdef __cplusplus
 }
 #endif
+
+/* 当前连接 AP 的信号强度(dBm)；未连接返回 0。状态页用来显示链路质量 */
+int8_t net_get_rssi(void);

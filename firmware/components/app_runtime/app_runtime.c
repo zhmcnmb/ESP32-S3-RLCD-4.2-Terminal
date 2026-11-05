@@ -179,6 +179,8 @@ esp_err_t app_runtime_start(const app_runtime_config_t *cfg)
     ESP_RETURN_ON_ERROR(ui_manager_register_page(page_weather_get()), TAG, "register weather");
     ESP_RETURN_ON_ERROR(ui_manager_register_page(page_env_monitor_get()), TAG, "register env");
     ESP_RETURN_ON_ERROR(ui_manager_register_page(page_wifi_get()), TAG, "register wifi");
+    /* 状态页放最后：排障用，翻页成本最低 */
+    ESP_RETURN_ON_ERROR(ui_manager_register_page(page_status_get()), TAG, "register status");
     ESP_RETURN_ON_ERROR(ui_manager_start(), TAG, "ui_manager_start");
 
     start_network(cfg);

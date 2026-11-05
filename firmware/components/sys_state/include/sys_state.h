@@ -143,7 +143,17 @@ typedef struct {
 
     /* 网络 / SD */
     bool wifi_connected;
+    int8_t wifi_rssi;   /* 当前连接 AP 的信号强度(dBm)，未连接为 0 */
     bool sd_mounted;
+
+    /* 运行资源(状态页用，与 300s 水位日志同源但实时取值) */
+    uint32_t uptime_s;      /* 本次上电运行秒数 */
+    uint32_t heap_free;     /* 内部堆剩余字节 */
+    uint32_t heap_min;      /* 内部堆历史最低 */
+    uint32_t psram_free;    /* PSRAM 剩余字节 */
+    uint32_t psram_min;     /* PSRAM 历史最低 */
+    int reset_reason;       /* esp_reset_reason_t 取值，0 表示未知 */
+    const char *fw_version; /* 固件版本字符串(静态存储，来自应用描述符) */
 
     /* 环境历史(趋势页用，只读视图) */
     sys_state_env_sample_t env_history[SYS_STATE_ENV_HISTORY_LEN];

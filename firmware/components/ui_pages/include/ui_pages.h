@@ -31,6 +31,9 @@ const ui_page_t *page_codex_usage_get(void);
 /* WiFi设置页: 连接状态显示与扫描配网入口，配网流程由 wifi_setup 组件驱动 */
 const ui_page_t *page_wifi_get(void);
 
+/* 系统状态页: 运行时长、复位原因、电池、信号、SD 与内存水位，仅供排障 */
+const ui_page_t *page_status_get(void);
+
 #ifdef __cplusplus
 }
 #endif
