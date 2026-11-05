@@ -1,10 +1,13 @@
 #!/usr/bin/env python3
-"""usage bridge v3: 以 站点仪表盘会话读取用量, 拼成固件 /v1/usage 契约供 ESP32 拉取.
+"""usage bridge v3: 以站点仪表盘会话读取用量, 拼成固件 /v1/usage 契约供 ESP32 拉取.
 
 数据源(全部为网站同源, 设备数字与网页一致):
   1. 站点仪表盘 /api/v1/usage/dashboard/models  -> 按模型当日统计(登录会话)
      会话: 邮箱密码自动登录并续期, 令牌轮换落盘
-  2. 上游 /v1/usage (sk- key) -> 日/周额度与近7天逐日费用+token(套餐口径)
+  2. 上游用量服务 /v1/usage (sk- key) -> 日/周额度与近7天逐日费用+token(套餐口径)
+
+上游地址/凭据不外置进代码: 命令行 --upstream-url/--upstream-key 优先, 否则读
+firmware/main/secrets.h 的 USAGE_UPSTREAM_URL / USAGE_UPSTREAM_KEY。
 
 底部一行 = 古诗词名句轮换(随数据刷新换句, 内置字库内文案, 无需外部文件)。
 
@@ -244,7 +247,7 @@ class UpstreamClient:
         self.fetched_at = 0.0
 
     def fetch(self, force=False):
-        if not self.api_key:
+        if not self.api_key or not self.base_url:
             return self.data
         if not force and self.data and time.time() - self.fetched_at < self.ttl:
             return self.data
@@ -266,7 +269,7 @@ class UpstreamClient:
 class ModelAggregatorToday:
     """当日（本地 00:00 起）模型用量聚合器。
 
-    从 站点 /api/v1/usage 拉取明细，只保留设备所在时区"今天"的记录。服务端支持 start_date
+    从站点 /api/v1/usage 拉取明细，只保留设备所在时区"今天"的记录。服务端支持 start_date
     过滤（实测 start_date=2026-10-27 把 24175 条筛到 696 条）与 page_size=500，
     所以冷启动按日期过滤 + 大页拉取，1~2 页即可覆盖窗口，不再靠 2000 条硬上限。
     """
@@ -590,8 +593,13 @@ def main():
     parser.add_argument("--refresh", type=float, default=20, help="聚合刷新间隔(秒), 与插电时设备轮询对齐")
     parser.add_argument("--remote-ttl", type=float, default=120, help="上游额度缓存秒数")
     parser.add_argument("--log-file", default="", help="日志文件路径; 给出即自管轮转(2MB 保留一份)")
-    parser.add_argument("--upstream-url", default="https://usage.example.com")
-    parser.add_argument("--upstream-key", default=read_secret(secrets, "CODEX_USAGE_API_KEY"))
+    parser.add_argument("--upstream-url",
+                        default=os.environ.get("USAGE_UPSTREAM_URL") or read_secret(secrets, "USAGE_UPSTREAM_URL"),
+                        help="上游用量服务 origin(如 https://your-usage-host.example.com)")
+    parser.add_argument("--upstream-key",
+                        default=os.environ.get("USAGE_UPSTREAM_KEY") or
+                        read_secret(secrets, "USAGE_UPSTREAM_KEY") or
+                        read_secret(secrets, "CODEX_USAGE_API_KEY"))
     parser.add_argument("--site-email", default=read_secret(secrets, "USAGE_SITE_EMAIL"))
     parser.add_argument("--site-password", default=read_secret(secrets, "USAGE_SITE_PASSWORD"))
     args = parser.parse_args()
@@ -599,6 +607,8 @@ def main():
     LOG_PATH = args.log_file
     if not (args.site_password or os.path.exists(SESSION_STATE)):
         log("[bridge] 未配置 USAGE_SITE_PASSWORD (firmware/main/secrets.h) 且无历史会话")
+    if not args.upstream_url:
+        log("[bridge] 未配置 USAGE_UPSTREAM_URL, 额度/逐日数据不可用(仅明细与模型榜)")
     bridge = Bridge(args)
     Handler.bridge = bridge
     bridge.start()

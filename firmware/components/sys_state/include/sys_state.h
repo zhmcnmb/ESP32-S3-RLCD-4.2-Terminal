@@ -158,7 +158,7 @@ typedef struct {
     char weather_wind[40];
     time_t weather_updated_at;
 
-    /* Codex上游服务的当日用量 */
+    /* 上游用量服务的当日用量 */
     sys_state_codex_usage_t codex_usage;
 
     /* 语音助手(P5.2)：page_jarvis 只读这些字段 */
