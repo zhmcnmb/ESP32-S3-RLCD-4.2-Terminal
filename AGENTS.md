@@ -9,7 +9,7 @@
 - P5.2 单轮语音闭环核心已真机验证。
 - P6.0 agent、P6.1 Web / Skills、P6.2 记忆 M1、P6.3 提醒 M1 已实现；免 Key Web 检索主链路（搜索/抽取）已验收，SD、Skill CRC、提醒等完整真机验收仍未完成，不能表述为已完成。
 - 当前 UI 工作只改视觉；不得改变已定按键语义(KEY短/长=NEXT/PREV，BOOT短/长=PTT/CANCEL)、`sys_state` 数据路径或任何降级逻辑。
-- 六个翻页页面为 Jarvis / 时钟 / 天气 / 环境趋势 / 用量 / WiFi；调试页已从翻页移除。
+- 翻页页面为 Jarvis / 时钟 / 天气 / 环境趋势 / 用量 / WiFi / 状态；Jarvis 因语音编译期关闭未注册，状态页供排障。
 
 ## 权威文档
 
@@ -69,7 +69,7 @@ app_runtime                         启动、注册、降级
 
 - `input_manager` 是 KEY/BOOT 唯一 GPIO 所有者。KEY 短按 NEXT、长按 PREV；BOOT 短按空闲时 push-to-talk、长按 CANCEL；PWR 不可分配固件功能。
 - UI 是 400×300、1bpp 的 ST7305 反射屏。正常状态安静，不重复说明成功状态或按键教程；异常、确认与可恢复动作才显示短文案。
-- 六个翻页页面(jarvis/home/weather/env_monitor/codex_usage/wifi)的视觉改动只能调整排版和绘制，不能改功能。
+- 翻页页面(jarvis/home/weather/env_monitor/codex_usage/wifi/status)的视觉改动只能调整排版和绘制，不能改功能。
 - WiFi 页是唯一例外按键模态：BOOT 短按进入配网流程后，KEY/BOOT 全部翻译为配网命令(选择/确认/删除)，逐层 BACK 退出才恢复翻页；配网状态机归 `wifi_setup` 组件，页面只读快照投命令。
 - WiFi 凭据配网成功后写 NVS，`net_init` 优先使用 NVS 凭据，`secrets.h` 仅作首次兜底；配网失败自动恢复旧凭据，不会留下断网状态。
 - ASCII 字库覆盖 `0x20..0x7A`（含小写字母与常用符号）。改动固件中文字符串或 `tools/charset.txt` 后必须运行 `python3 tools/gen_font.py`；不要手改 `font_cn16.c`。
